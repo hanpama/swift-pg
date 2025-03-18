@@ -387,7 +387,12 @@ final class PostgreSQLProtocolClient: Sendable {
       case 0x44:  // 'D'
         message = .dataRow(
           (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-            buffer.readBytes(length: Int(buffer.readInteger(as: Int32.self)!))!
+            let length = buffer.readInteger(as: Int32.self)!
+            if length == -1 {
+              return []
+            } else {
+              return buffer.readBytes(length: Int(length))!.map { $0 }
+            }
           }
         )
       case 0x31:  // '1'
@@ -566,7 +571,8 @@ final actor PostgreSQLConnection {
     return (commendTags, rows)
   }
 
-  private func encodeParameter(_ parameter: PostgreSQLEncodable, typeOid: Int32) throws -> [UInt8] {
+  private func encodeParameter(_ parameter: PostgreSQLEncodable, typeOid: Int32) throws -> [UInt8]?
+  {
     return try parameter.encodeForPostgreSQL(postgreSQLTypeOid: typeOid)
   }
 }
@@ -578,13 +584,19 @@ struct PostgreSQLRow {
   let columns: [[UInt8]]
   // let columnLocs: [String: Int]
 
-  func get<T: PostgreSQLDecodable>(at index: Int) throws -> T {
+  func get<T>(at index: Int) throws -> T {
     return try get(T.self, at: index)
   }
 
-  func get<T: PostgreSQLDecodable>(_ type: T.Type, at index: Int) throws -> T {
-    return try T.init(
-      postgreSQLTypeOid: fields[index].dataTypeOID, fromPostgreSQLData: columns[index])!
+  func get<T>(_ type: T.Type, at index: Int) throws -> T {
+    if type == Any.self {
+      throw PostgreSQLError.codecError("Cannot decode Any")
+    }
+    guard let type = type as? PostgreSQLDecodable.Type else {
+      throw PostgreSQLError.codecError("Cannot decode \(type)")
+    }
+    return try type.init(
+      postgreSQLTypeOid: fields[index].dataTypeOID, fromPostgreSQLData: columns[index]) as! T
   }
 }
 
@@ -605,15 +617,29 @@ struct PostgreSQLConnectionConfiguration {
 // MARK: - Codec
 
 protocol PostgreSQLEncodable {
-  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]
+  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]?
 }
 
 protocol PostgreSQLDecodable {
   init?(postgreSQLTypeOid: Int32, fromPostgreSQLData: [UInt8]) throws
 }
 
-extension Bool: PostgreSQLEncodable, PostgreSQLDecodable {
-  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8] {
+protocol PostgreSQLEncodableArrayElement: PostgreSQLEncodable {
+  static var postgreSQLArrayElementTypes: [Int32: Int32] { get }
+}
+
+protocol PostgreSQLDecodableArrayElement: PostgreSQLDecodable {
+  static var postgreSQLArrayElementTypes: [Int32: Int32] { get }
+}
+
+typealias PostgreSQLCodable = PostgreSQLEncodable & PostgreSQLDecodable
+typealias PostgreSQLCodableArrayElement = PostgreSQLEncodableArrayElement
+  & PostgreSQLDecodableArrayElement
+
+extension Bool: PostgreSQLCodable, PostgreSQLCodableArrayElement {
+  static var postgreSQLArrayElementTypes: [Int32: Int32] { [1000: 16] }
+
+  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]? {
     if postgreSQLTypeOid == 16 {
       return [UInt8(self ? 1 : 0)]
     }
@@ -628,59 +654,76 @@ extension Bool: PostgreSQLEncodable, PostgreSQLDecodable {
   }
 }
 
-extension Int16: PostgreSQLEncodable, PostgreSQLDecodable {
-  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8] {
+extension Int16: PostgreSQLCodable, PostgreSQLCodableArrayElement {
+  static var postgreSQLArrayElementTypes: [Int32: Int32] { [1005: 21] }
+
+  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]? {
     if postgreSQLTypeOid == 21 {
-      return encodeBinary(self)
+      return withUnsafeBytes(of: self.bigEndian) { Array($0) }
     }
     throw PostgreSQLError.codecError("Cannot encode Int16 as \(postgreSQLTypeOid)")
   }
 
   init?(postgreSQLTypeOid: Int32, fromPostgreSQLData data: [UInt8]) throws {
     if postgreSQLTypeOid == 21 {
-      self = try decodeBinary(data)
-      return
+      guard data.count == MemoryLayout<Self>.size else {
+        throw PostgreSQLError.codecError("Invalid byte count for \(Self.self)")
+      }
+      self = data.withUnsafeBytes { $0.load(as: Self.self) }.bigEndian
+    } else {
+      throw PostgreSQLError.codecError("Cannot decode Int16 from \(postgreSQLTypeOid)")
     }
-    throw PostgreSQLError.codecError("Cannot decode Int16 from \(postgreSQLTypeOid)")
   }
 }
 
-extension Int32: PostgreSQLEncodable, PostgreSQLDecodable {
-  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8] {
+extension Int32: PostgreSQLCodable, PostgreSQLCodableArrayElement {
+  static var postgreSQLArrayElementTypes: [Int32: Int32] { [1007: 23] }
+
+  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]? {
     if postgreSQLTypeOid == 23 {
-      return encodeBinary(self)
+      return withUnsafeBytes(of: self.bigEndian) { Array($0) }
     }
     throw PostgreSQLError.codecError("Cannot encode Int32 as \(postgreSQLTypeOid)")
   }
 
   init?(postgreSQLTypeOid: Int32, fromPostgreSQLData data: [UInt8]) throws {
     if postgreSQLTypeOid == 23 {
-      self = try decodeBinary(data)
-      return
+      guard data.count == MemoryLayout<Self>.size else {
+        throw PostgreSQLError.codecError("Invalid byte count for \(Self.self)")
+      }
+      self = data.withUnsafeBytes { $0.load(as: Self.self) }.bigEndian
+    } else {
+      throw PostgreSQLError.codecError("Cannot decode Int32 from \(postgreSQLTypeOid)")
     }
-    throw PostgreSQLError.codecError("Cannot decode Int32 from \(postgreSQLTypeOid)")
   }
 }
 
-extension Int64: PostgreSQLEncodable, PostgreSQLDecodable {
-  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8] {
+extension Int64: PostgreSQLCodable, PostgreSQLCodableArrayElement {
+  static var postgreSQLArrayElementTypes: [Int32: Int32] { [1016: 20] }
+
+  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]? {
     if postgreSQLTypeOid == 20 {
-      return encodeBinary(self)
+      return withUnsafeBytes(of: self.bigEndian) { Array($0) }
     }
     throw PostgreSQLError.codecError("Cannot encode Int64 as \(postgreSQLTypeOid)")
   }
 
   init?(postgreSQLTypeOid: Int32, fromPostgreSQLData data: [UInt8]) throws {
     if postgreSQLTypeOid == 20 {
-      self = try decodeBinary(data)
-      return
+      guard data.count == MemoryLayout<Self>.size else {
+        throw PostgreSQLError.codecError("Invalid byte count for \(Self.self)")
+      }
+      self = data.withUnsafeBytes { $0.load(as: Self.self) }.bigEndian
+    } else {
+      throw PostgreSQLError.codecError("Cannot decode Int64 from \(postgreSQLTypeOid)")
     }
-    throw PostgreSQLError.codecError("Cannot decode Int64 from \(postgreSQLTypeOid)")
   }
 }
 
-extension String: PostgreSQLEncodable, PostgreSQLDecodable {
-  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8] {
+extension String: PostgreSQLCodable, PostgreSQLCodableArrayElement {
+  static var postgreSQLArrayElementTypes: [Int32: Int32] { [1009: 25, 1015: 1043] }
+
+  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]? {
     if postgreSQLTypeOid == 25 || postgreSQLTypeOid == 1043 {
       return utf8.map { UInt8($0) }
     }
@@ -695,55 +738,71 @@ extension String: PostgreSQLEncodable, PostgreSQLDecodable {
   }
 }
 
-extension Float: PostgreSQLEncodable, PostgreSQLDecodable {
-  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8] {
+extension Float: PostgreSQLCodable, PostgreSQLCodableArrayElement {
+  static var postgreSQLArrayElementTypes: [Int32: Int32] { [1021: 700] }
+
+  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]? {
     if postgreSQLTypeOid == 700 {
-      return encodeBinary(self.bitPattern)
+      return withUnsafeBytes(of: self.bitPattern.bigEndian) { Array($0) }
     }
     throw PostgreSQLError.codecError("Cannot encode Float as \(postgreSQLTypeOid)")
   }
 
   init?(postgreSQLTypeOid: Int32, fromPostgreSQLData data: [UInt8]) throws {
     if postgreSQLTypeOid == 700 {
-      let bitPattern: UInt32 = try decodeBinary(data)
+      guard data.count == MemoryLayout<UInt32>.size else {
+        throw PostgreSQLError.codecError("Invalid byte count for \(Self.self)")
+      }
+      let bitPattern = data.withUnsafeBytes { $0.load(as: UInt32.self) }.bigEndian
       self = Float(bitPattern: bitPattern)
-      return
+    } else {
+      throw PostgreSQLError.codecError("Cannot decode Float from \(postgreSQLTypeOid)")
     }
-    throw PostgreSQLError.codecError("Cannot decode Float from \(postgreSQLTypeOid)")
   }
 }
 
-extension Double: PostgreSQLEncodable, PostgreSQLDecodable {
-  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8] {
+extension Double: PostgreSQLCodable, PostgreSQLCodableArrayElement {
+  static var postgreSQLArrayElementTypes: [Int32: Int32] { [1022: 701] }
+
+  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]? {
     if postgreSQLTypeOid == 701 {
-      return encodeBinary(self.bitPattern)
+      return withUnsafeBytes(of: self.bitPattern.bigEndian) { Array($0) }
     }
     throw PostgreSQLError.codecError("Cannot encode Double as \(postgreSQLTypeOid)")
   }
 
   init?(postgreSQLTypeOid: Int32, fromPostgreSQLData data: [UInt8]) throws {
     if postgreSQLTypeOid == 701 {
-      let bitPattern: UInt64 = try decodeBinary(data)
+      guard data.count == MemoryLayout<UInt64>.size else {
+        throw PostgreSQLError.codecError("Invalid byte count for \(Self.self)")
+      }
+      let bitPattern = data.withUnsafeBytes { $0.load(as: UInt64.self) }.bigEndian
       self = Double(bitPattern: bitPattern)
-      return
+    } else {
+      throw PostgreSQLError.codecError("Cannot decode Double from \(postgreSQLTypeOid)")
     }
-    throw PostgreSQLError.codecError("Cannot decode Double from \(postgreSQLTypeOid)")
   }
 }
 
-extension Date: PostgreSQLEncodable, PostgreSQLDecodable {
-  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8] {
-    if postgreSQLTypeOid == 1114 {
+extension Date: PostgreSQLCodable, PostgreSQLCodableArrayElement {
+  static var postgreSQLArrayElementTypes: [Int32: Int32] { [1185: 1184, 1115: 1114] }
+
+  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]? {
+    if postgreSQLTypeOid == 1114 || postgreSQLTypeOid == 1184 {
       let epochDifference: TimeInterval = 946_684_800  // PostgreSQL epoch offset for timestamp without time zone
       let microseconds = Int64((timeIntervalSince1970 - epochDifference) * 1_000_000)
-      return encodeBinary(microseconds)
+      return withUnsafeBytes(of: microseconds.bigEndian) { Array($0) }
     }
     throw PostgreSQLError.codecError("Cannot encode Date as \(postgreSQLTypeOid)")
   }
 
   init?(postgreSQLTypeOid: Int32, fromPostgreSQLData data: [UInt8]) throws {
-    if postgreSQLTypeOid == 1114 {
-      let microseconds: Int64 = try decodeBinary(data)
+    if postgreSQLTypeOid == 1114 || postgreSQLTypeOid == 1184 {
+      guard data.count == MemoryLayout<Int64>.size else {
+        throw PostgreSQLError.codecError("Invalid byte count for \(Self.self)")
+      }
+      let microseconds = data.withUnsafeBytes { $0.load(as: Int64.self) }.bigEndian
+
       let epochDifference: TimeInterval = 946_684_800
       self = Date(timeIntervalSince1970: TimeInterval(microseconds) / 1_000_000 + epochDifference)
       return
@@ -752,8 +811,10 @@ extension Date: PostgreSQLEncodable, PostgreSQLDecodable {
   }
 }
 
-extension UUID: PostgreSQLEncodable, PostgreSQLDecodable {
-  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8] {
+extension UUID: PostgreSQLCodable, PostgreSQLCodableArrayElement {
+  static var postgreSQLArrayElementTypes: [Int32: Int32] { [2951: 2950] }
+
+  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]? {
     if postgreSQLTypeOid == 2950 {
       let b = uuid
       return [
@@ -772,6 +833,91 @@ extension UUID: PostgreSQLEncodable, PostgreSQLDecodable {
       self.init(uuid: b)
     } else {
       throw PostgreSQLError.codecError("Cannot decode UUID from \(postgreSQLTypeOid)")
+    }
+  }
+}
+
+extension Optional: PostgreSQLEncodable where Wrapped: PostgreSQLEncodable {
+  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]? {
+    switch self {
+    case .none:
+      return nil
+    case .some(let wrapped):
+      return try wrapped.encodeForPostgreSQL(postgreSQLTypeOid: postgreSQLTypeOid)
+    }
+  }
+}
+
+extension Optional: PostgreSQLDecodable where Wrapped: PostgreSQLDecodable {
+  init?(postgreSQLTypeOid: Int32, fromPostgreSQLData data: [UInt8]) throws {
+    if data.isEmpty {
+      self = .none
+    } else {
+      self = try Wrapped(postgreSQLTypeOid: postgreSQLTypeOid, fromPostgreSQLData: data)
+    }
+  }
+}
+
+extension Array: PostgreSQLEncodable where Element: PostgreSQLEncodableArrayElement {
+  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]? {
+    if let elementTypeOid = Element.postgreSQLArrayElementTypes[postgreSQLTypeOid] {
+      var buffer = ByteBufferAllocator().buffer(capacity: 0)
+      buffer.writeInteger(Int32(1))  // ndim
+      buffer.writeInteger(Int32(0))  // flags
+      buffer.writeInteger(elementTypeOid)
+      buffer.writeInteger(Int32(self.count))
+      buffer.writeInteger(Int32(1))
+
+      for element in self {
+        if let data = try element.encodeForPostgreSQL(postgreSQLTypeOid: elementTypeOid) {
+          buffer.writeInteger(Int32(data.count))
+          buffer.writeBytes(data)
+        } else {
+          buffer.writeInteger(Int32(-1))
+        }
+      }
+
+      return buffer.readBytes(length: buffer.readableBytes)!.map { $0 }
+    }
+    throw PostgreSQLError.codecError("Cannot encode [\(Element.self)] as \(postgreSQLTypeOid)")
+  }
+}
+
+extension Array: PostgreSQLDecodable where Element: PostgreSQLDecodableArrayElement {
+  init(postgreSQLTypeOid: Int32, fromPostgreSQLData: [UInt8]) throws {
+    if let elementTypeOid = Element.postgreSQLArrayElementTypes[postgreSQLTypeOid] {
+      var buffer = ByteBufferAllocator().buffer(capacity: fromPostgreSQLData.count)
+      buffer.writeBytes(fromPostgreSQLData)
+
+      guard let ndim = buffer.readInteger(as: Int32.self),
+        let flags = buffer.readInteger(as: Int32.self),
+        let elementOid = buffer.readInteger(as: Int32.self),
+        let count = buffer.readInteger(as: Int32.self),
+        let lbound = buffer.readInteger(as: Int32.self)
+      else {
+        throw PostgreSQLError.codecError("Invalid array data")
+      }
+      guard ndim == 1, flags == 0, elementOid == elementTypeOid, lbound == 1 else {
+        throw PostgreSQLError.codecError("Invalid array data")
+      }
+
+      var elements: [Element?] = []
+      for _ in 0..<count {
+        guard let length = buffer.readInteger(as: Int32.self) else {
+          throw PostgreSQLError.codecError("Invalid array data")
+        }
+        if length == -1 {
+          elements.append(nil as Element?)
+        } else {
+          let data = buffer.readBytes(length: Int(length))!.map { $0 }
+          let element = try Element.init(
+            postgreSQLTypeOid: elementTypeOid, fromPostgreSQLData: data)
+          elements.append(element)
+        }
+      }
+      self = elements as! [Element]
+    } else {
+      throw PostgreSQLError.codecError("Cannot decode [\(Element.self)] from \(postgreSQLTypeOid)")
     }
   }
 }
@@ -949,19 +1095,4 @@ class ScramSha256Authenticator {
 
 struct ScramSha256AuthenticatorError: Error {
   let message: String
-}
-
-// MARK: - Utils
-
-// Helper for binary encoding of fixed‑width integers:
-func encodeBinary<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
-  var bigEndianValue = value.bigEndian
-  return withUnsafeBytes(of: &bigEndianValue) { Array($0) }
-}
-
-func decodeBinary<T: FixedWidthInteger>(_ data: [UInt8]) throws -> T {
-  guard data.count == MemoryLayout<T>.size else {
-    throw PostgreSQLError.codecError("Invalid byte count for \(T.self)")
-  }
-  return data.withUnsafeBytes { $0.load(as: T.self) }.bigEndian
 }
