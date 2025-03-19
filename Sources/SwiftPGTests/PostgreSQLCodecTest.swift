@@ -21,7 +21,9 @@ final class PostgreSQLCodecTest {
         $7::float8 = 42,
         $8::varchar = 'Hello, world!',
         $9::timestamp = '1970-01-01 00:00:42',
-        $10::uuid = '6f41c8bc-38aa-481d-9b1d-1d2d6c81789a'
+        $10::uuid = '6f41c8bc-38aa-481d-9b1d-1d2d6c81789a',
+        $11::int4 = 42,
+        $12::int8 = 42
       """,
       [
         true,
@@ -34,6 +36,8 @@ final class PostgreSQLCodecTest {
         "Hello, world!",
         Date(timeIntervalSince1970: 42),
         UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")!,
+        Int(42),
+        Int(42),
       ]
     )
 
@@ -48,6 +52,8 @@ final class PostgreSQLCodecTest {
       #expect(try row.get(Bool.self, at: 7))
       #expect(try row.get(Bool.self, at: 8))
       #expect(try row.get(Bool.self, at: 9))
+      #expect(try row.get(Bool.self, at: 10))
+      #expect(try row.get(Bool.self, at: 11))
     }
   }
 
@@ -65,7 +71,9 @@ final class PostgreSQLCodecTest {
         $7::float8 is null,
         $8::varchar is null,
         $9::timestamp is null,
-        $10::uuid is null
+        $10::uuid is null,
+        $11::int4 is null,
+        $12::int8 is null
       """,
       [
         nil as Bool?,
@@ -78,6 +86,8 @@ final class PostgreSQLCodecTest {
         nil as String?,
         nil as Date?,
         nil as UUID?,
+        nil as Int?,
+        nil as Int?,
       ]
     )
 
@@ -92,6 +102,8 @@ final class PostgreSQLCodecTest {
       #expect(try row.get(Bool.self, at: 7))
       #expect(try row.get(Bool.self, at: 8))
       #expect(try row.get(Bool.self, at: 9))
+      #expect(try row.get(Bool.self, at: 10))
+      #expect(try row.get(Bool.self, at: 11))
     }
   }
 
@@ -110,7 +122,9 @@ final class PostgreSQLCodecTest {
         $7::float8[] = ARRAY[42, 43]::float8[],
         $8::varchar[] = ARRAY['Hello', 'World']::varchar[],
         $9::timestamp[] = ARRAY['1970-01-01 00:00:42', '1970-01-01 00:00:43']::timestamp[],
-        $10::uuid[] = ARRAY['6f41c8bc-38aa-481d-9b1d-1d2d6c81789a', '6f41c8bc-38aa-481d-9b1d-1d2d6c81789b']::uuid[]
+        $10::uuid[] = ARRAY['6f41c8bc-38aa-481d-9b1d-1d2d6c81789a', '6f41c8bc-38aa-481d-9b1d-1d2d6c81789b']::uuid[],
+        $11::int4[] = ARRAY[42, 43]::int4[],
+        $12::int8[] = ARRAY[42, 43]::int8[]
       """,
       [
         [true, false],
@@ -129,6 +143,8 @@ final class PostgreSQLCodecTest {
           UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")!,
           UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789b")!,
         ],
+        [Int(42), Int(43)],
+        [Int(42), Int(43)],
       ]
     )
 
@@ -143,6 +159,8 @@ final class PostgreSQLCodecTest {
       #expect(try row.get(Bool.self, at: 7))
       #expect(try row.get(Bool.self, at: 8))
       #expect(try row.get(Bool.self, at: 9))
+      #expect(try row.get(Bool.self, at: 10))
+      #expect(try row.get(Bool.self, at: 11))
     }
   }
 
@@ -161,7 +179,9 @@ final class PostgreSQLCodecTest {
         42::float8,
         'Hello, world!'::varchar,
         '1970-01-01 00:00:42'::timestamp,
-        '6f41c8bc-38aa-481d-9b1d-1d2d6c81789a'::uuid
+        '6f41c8bc-38aa-481d-9b1d-1d2d6c81789a'::uuid,
+        42::int4,
+        42::int8
       """
     )
 
@@ -181,6 +201,8 @@ final class PostgreSQLCodecTest {
       #expect(
         try row.get(UUID.self, at: 9) == UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")
       )
+      #expect(try row.get(Int.self, at: 10) == 42)
+      #expect(try row.get(Int.self, at: 11) == 42)
     }
   }
 
@@ -199,7 +221,9 @@ final class PostgreSQLCodecTest {
         NULL::float8,
         NULL::varchar,
         NULL::timestamp,
-        NULL::uuid
+        NULL::uuid,
+        NULL::int4,
+        NULL::int8
       """
     )
 
@@ -214,6 +238,8 @@ final class PostgreSQLCodecTest {
       #expect(try row.get(String?.self, at: 7) == nil)
       #expect(try row.get(Date?.self, at: 8) == nil)
       #expect(try row.get(UUID?.self, at: 9) == nil)
+      #expect(try row.get(Int?.self, at: 10) == nil)
+      #expect(try row.get(Int?.self, at: 11) == nil)
     }
   }
 
@@ -232,7 +258,9 @@ final class PostgreSQLCodecTest {
         ARRAY[42, 43]::float8[],
         ARRAY['Hello', 'World']::varchar[],
         ARRAY['1970-01-01 00:00:42', '1970-01-01 00:00:43']::timestamp[],
-        ARRAY['6f41c8bc-38aa-481d-9b1d-1d2d6c81789a', '6f41c8bc-38aa-481d-9b1d-1d2d6c81789b']::uuid[]
+        ARRAY['6f41c8bc-38aa-481d-9b1d-1d2d6c81789a', '6f41c8bc-38aa-481d-9b1d-1d2d6c81789b']::uuid[],
+        ARRAY[42, 43]::int4[],
+        ARRAY[42, 43]::int8[]
       """
     )
 
@@ -257,6 +285,8 @@ final class PostgreSQLCodecTest {
           UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789b")!,
         ]
       )
+      #expect(try row.get([Int].self, at: 10) == [42, 43])
+      #expect(try row.get([Int].self, at: 11) == [42, 43])
     }
   }
 
