@@ -28,17 +28,40 @@ enum PostgreSQLFrontendMessage {
 
 enum PostgreSQLBackendMessage {
   case authenticationOk
+  case authenticationKerberosV5
+  case authenticationCleartextPassword
+  case authenticationMD5Password(_ salt: [UInt8])
+  case authenticationGSS
+  case authenticationGSSContinue
+  case authenticationSSPI
   case authenticationSasl(_ mechanisms: [String])
   case authenticationSaslContinue(String)
   case authenticationSaslFinal(String)
+  case backendKeyData(_ processID: Int32, _ secretKey: Int32)
+  case bindComplete
+  case closeComplete
   case commandComplete(_ commandTag: String)
+  case copyData(_ data: [UInt8])
+  case copyDone
+  case copyInResponse(_ format: Int8, _ columnFormats: [Int16])
+  case copyOutResponse(_ format: Int8, _ columnFormats: [Int16])
+  case copyBothResponse(_ format: Int8, _ columnFormats: [Int16])
   case dataRow(_ columns: [[UInt8]])
+  case emptyQueryResponse
   case errorResponse(_ errorFields: [PostgreSQLMessageField])
+  case functionCallResponse(_ functionResult: [UInt8])
+  case negotiateProtocolVersion(_ newestVersion: Int32, _ notRecognized: [String])
+  case noData
+  case noticeResponse(_ noticeFields: [PostgreSQLMessageField])
+  case notificationResponse(_ processID: Int32, _ channel: String, _ payload: String)
+  case parameterDescription(_ parameterOIDs: [Int32])
+  case parameterStatus(_ parameter: String, _ value: String)
+  case parseComplete
+  case portalSuspended
   case readyForQuery(_ transactionStatus: UInt8)
   case rowDescription(_ fields: [PostgreSQLFieldDescription])
-  case parameterDescription(_ parameterOIDs: [Int32])
-  case parseComplete
-  case bindComplete
+  case unknown  // Placeholder for unknown message types
+  case unknownAuthentication  // Placeholder for unknown authentication message types
 }
 
 enum PostgreSQLMessageField {
@@ -79,9 +102,8 @@ struct PostgreSQLBoundParameter {
 // MARK: - Protocol Client
 
 final class PostgreSQLProtocolClient: Sendable {
-  let messages: AsyncThrowingStream<PostgreSQLBackendMessage, Error>
-
   private let channel: Channel
+  private let messages: AsyncStream<PostgreSQLBackendMessage?>
 
   enum ConnectOptions {
     case hostPort(_ host: String, _ port: Int)
@@ -89,13 +111,18 @@ final class PostgreSQLProtocolClient: Sendable {
   }
 
   init(_ loop: EventLoop, _ connectOpts: ConnectOptions) async throws {
-    var continuation: AsyncThrowingStream<PostgreSQLBackendMessage, Error>.Continuation?
-    self.messages = AsyncThrowingStream { continuation = $0 }
+    var continuation: AsyncStream<PostgreSQLBackendMessage?>.Continuation?
+    let stream = AsyncStream { continuation = $0 }
 
     let bootstrap = ClientBootstrap(group: loop)
-      .channelOption(ChannelOptions.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
+      .channelOption(.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
+      .channelOption(.autoRead, value: false)
       .channelInitializer { channel in
-        channel.pipeline.addHandler(PostgreSQLMessageHandler(continuation!))
+        channel.pipeline.addHandler(
+          PostgreSQLMessageHandler { [continuation] message in
+            continuation!.yield(message)
+          }
+        )
       }
 
     switch connectOpts {
@@ -104,14 +131,32 @@ final class PostgreSQLProtocolClient: Sendable {
     case .unixDomainSocket(let path):
       self.channel = try await bootstrap.connect(unixDomainSocketPath: path).get()
     }
+    self.messages = stream
+    channel.read()
+  }
+
+  func send(_ message: PostgreSQLFrontendMessage) async throws {
+    print("Sending message: \(message)")
+    let buffer = encodeMessage(message: message)
+    try await channel.writeAndFlush(buffer)
   }
 
   func close() async throws {
     try await channel.close()
   }
 
-  func send(_ message: PostgreSQLFrontendMessage) async throws {
-    print("Sending message: \(message)")
+  func receive() async throws -> PostgreSQLBackendMessage {
+    for try await message in messages {
+      if let message = message {
+        return message
+      } else {
+        channel.read()
+      }
+    }
+    throw PostgreSQLError.transportError("No message received")
+  }
+
+  private func encodeMessage(message: PostgreSQLFrontendMessage) -> ByteBuffer {
     var buffer = ByteBuffer()
 
     switch message {
@@ -252,139 +297,137 @@ final class PostgreSQLProtocolClient: Sendable {
       buffer.writeInteger(UInt8(ascii: "X"))
       buffer.writeInteger(Int32(4))
     }
+    return buffer
+  }
 
-    try await channel.writeAndFlush(buffer)
-    // print("Sent")
+  private static func decodeMessage(
+    _ messageType: UInt8, _ dataLength: Int, _ buffer: inout ByteBuffer
+  ) -> PostgreSQLBackendMessage {
+    let message: PostgreSQLBackendMessage
+    print("Receiving message type: \(messageType)")
+
+    switch messageType {
+    case 82:  // 'R'
+      let authMessageType = buffer.readInteger(as: Int32.self)!
+      switch authMessageType {
+      case 0:
+        message = .authenticationOk
+      case 10:
+        message = .authenticationSasl(
+          buffer.readNullTerminatedString()!.split(separator: ",").map { String($0) })
+      case 11:
+        message = .authenticationSaslContinue(buffer.readString(length: dataLength - 4)!)
+      case 12:
+        message = .authenticationSaslFinal(buffer.readString(length: dataLength - 4)!)
+      default:
+        message = .unknownAuthentication
+      }
+    case 67:  // 'C'
+      message = .commandComplete(buffer.readNullTerminatedString()!)
+    case 69:  // 'E'
+      var errorFields: [PostgreSQLMessageField] = []
+      while let fieldType = buffer.readInteger(as: UInt8.self), fieldType != 0 {
+        guard let fieldValue = buffer.readNullTerminatedString() else {
+          continue
+        }
+        let field: PostgreSQLMessageField
+        switch fieldType {
+        case 0x53: field = .severity(fieldValue)  // 'S'
+        case 0x56: field = .severity(fieldValue)  // 'V'
+        case 0x43: field = .code(fieldValue)  // 'C'
+        case 0x4D: field = .message(fieldValue)  // 'M'
+        case 0x44: field = .detail(fieldValue)  // 'D'
+        case 0x48: field = .hint(fieldValue)  // 'H'
+        case 0x50: field = .position(fieldValue)  // 'P'
+        case 0x70: field = .internalPosition(fieldValue)  // 'p'
+        case 0x71: field = .internalQuery(fieldValue)  // 'q'
+        case 0x57: field = .where_(fieldValue)  // 'W'
+        case 0x73: field = .schemaName(fieldValue)  // 's'
+        case 0x74: field = .tableName(fieldValue)  // 't'
+        case 0x63: field = .columnName(fieldValue)  // 'c'
+        case 0x64: field = .dataTypeName(fieldValue)  // 'd'
+        case 0x6E: field = .constraintName(fieldValue)  // 'n'
+        case 0x46: field = .file(fieldValue)  // 'F'
+        case 0x4C: field = .line(fieldValue)  // 'L'
+        case 0x52: field = .routine(fieldValue)  // 'R'
+        default: continue
+        }
+        errorFields.append(field)
+      }
+      message = .errorResponse(errorFields)
+    case 90:  // 'Z'
+      message = .readyForQuery(buffer.readInteger(as: UInt8.self)!)
+    case 84:  // 'T'
+      message = .rowDescription(
+        (0..<buffer.readInteger(as: Int16.self)!).map { _ in
+          .init(
+            name: buffer.readNullTerminatedString()!,
+            tableOID: buffer.readInteger(as: Int32.self)!,
+            columnAttr: buffer.readInteger(as: Int16.self)!,
+            dataTypeOID: buffer.readInteger(as: Int32.self)!,
+            dataTypeSize: buffer.readInteger(as: Int16.self)!,
+            typeModifier: buffer.readInteger(as: Int32.self)!,
+            formatCode: buffer.readInteger(as: Int16.self)!
+          )
+        }
+      )
+    case 116:  // 't'
+      message = .parameterDescription(
+        (0..<buffer.readInteger(as: Int16.self)!).map { _ in
+          buffer.readInteger(as: Int32.self)!
+        }
+      )
+    case 68:  // 'D'
+      message = .dataRow(
+        (0..<buffer.readInteger(as: Int16.self)!).map { _ in
+          let length = buffer.readInteger(as: Int32.self)!
+          if length == -1 {
+            return []
+          } else {
+            return buffer.readBytes(length: Int(length))!.map { $0 }
+          }
+        }
+      )
+    case 49:  // '1'
+      message = .parseComplete
+    case 50:  // '2'
+      message = .bindComplete
+    default:
+      // print("Unknown message type: \(messageType)")
+      buffer.moveReaderIndex(forwardBy: dataLength)
+      message = .unknown
+    }
+    return message
   }
 
   private final class PostgreSQLMessageHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = ByteBuffer
     typealias OutboundOut = ByteBuffer
-    private let continuation: AsyncThrowingStream<PostgreSQLBackendMessage, Error>.Continuation
+    private let onMessage: @Sendable (PostgreSQLBackendMessage?) -> Void
 
-    init(_ continuation: AsyncThrowingStream<PostgreSQLBackendMessage, Error>.Continuation) {
-      self.continuation = continuation
+    init(_ onMessage: @Sendable @escaping (PostgreSQLBackendMessage?) -> Void) {
+      self.onMessage = onMessage
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-      var buffer: ByteBuffer = unwrapInboundIn(data)
+      var buffer = unwrapInboundIn(data)
       while buffer.readableBytes >= 5 {  // Process all complete messages in the buffer
-        if let message = receiveBackendMessage(&buffer) {
-          // print("Received message: \(message)")
-          continuation.yield(message)
+        guard let messageType = buffer.getInteger(at: buffer.readerIndex, as: UInt8.self),
+          let messageLength = buffer.getInteger(at: buffer.readerIndex + 1, as: Int32.self)
+        else {
+          onMessage(nil)
+          return
         }
-      }
-    }
-    private func receiveBackendMessage(_ buffer: inout ByteBuffer) -> PostgreSQLBackendMessage? {
-      guard let messageType = buffer.getInteger(at: buffer.readerIndex, as: UInt8.self),
-        let messageLength = buffer.getInteger(at: buffer.readerIndex + 1, as: Int32.self)
-      else {
-        return nil
-      }
-
-      let dataLength = Int(messageLength) - 4  // 4 bytes for the length itself
-      if buffer.readableBytes < 5 + dataLength {  // Not enough data yet
-        return nil
-      }
-
-      buffer.moveReaderIndex(forwardBy: 5)  // Consume the message type and length
-
-      let message: PostgreSQLBackendMessage?
-      print("Receiving message type: \(messageType)")
-
-      switch messageType {
-      case 0x52:  // 'R'
-        let authMessageType = buffer.readInteger(as: Int32.self)!
-        switch authMessageType {
-        case 0:
-          message = .authenticationOk
-        case 10:
-          message = .authenticationSasl(
-            buffer.readNullTerminatedString()!.split(separator: ",").map { String($0) })
-        case 11:
-          message = .authenticationSaslContinue(buffer.readString(length: dataLength - 4)!)
-        case 12:
-          message = .authenticationSaslFinal(buffer.readString(length: dataLength - 4)!)
-        default:
-          buffer.moveReaderIndex(forwardBy: dataLength - 4)  // TODO: should throw an error
-          message = nil
+        let dataLength = Int(messageLength) - 4  // 4 bytes for the length itself
+        if buffer.readableBytes < 5 + dataLength {  // Not enough data yet
+          onMessage(nil)
+          return
         }
-      case 0x43:  // 'C'
-        message = .commandComplete(buffer.readNullTerminatedString()!)
-      case 0x45:  // 'E'
-        var errorFields: [PostgreSQLMessageField] = []
-        while let fieldType = buffer.readInteger(as: UInt8.self), fieldType != 0 {
-          guard let fieldValue = buffer.readNullTerminatedString() else {
-            continue
-          }
-          let field: PostgreSQLMessageField
-          switch fieldType {
-          case 0x53: field = .severity(fieldValue)  // 'S'
-          case 0x56: field = .severity(fieldValue)  // 'V'
-          case 0x43: field = .code(fieldValue)  // 'C'
-          case 0x4D: field = .message(fieldValue)  // 'M'
-          case 0x44: field = .detail(fieldValue)  // 'D'
-          case 0x48: field = .hint(fieldValue)  // 'H'
-          case 0x50: field = .position(fieldValue)  // 'P'
-          case 0x70: field = .internalPosition(fieldValue)  // 'p'
-          case 0x71: field = .internalQuery(fieldValue)  // 'q'
-          case 0x57: field = .where_(fieldValue)  // 'W'
-          case 0x73: field = .schemaName(fieldValue)  // 's'
-          case 0x74: field = .tableName(fieldValue)  // 't'
-          case 0x63: field = .columnName(fieldValue)  // 'c'
-          case 0x64: field = .dataTypeName(fieldValue)  // 'd'
-          case 0x6E: field = .constraintName(fieldValue)  // 'n'
-          case 0x46: field = .file(fieldValue)  // 'F'
-          case 0x4C: field = .line(fieldValue)  // 'L'
-          case 0x52: field = .routine(fieldValue)  // 'R'
-          default: continue
-          }
-          errorFields.append(field)
-        }
-        message = .errorResponse(errorFields)
-      case 0x5A:  // 'Z'
-        message = .readyForQuery(buffer.readInteger(as: UInt8.self)!)
-      case 0x54:  // 'T'
-        message = .rowDescription(
-          (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-            .init(
-              name: buffer.readNullTerminatedString()!,
-              tableOID: buffer.readInteger(as: Int32.self)!,
-              columnAttr: buffer.readInteger(as: Int16.self)!,
-              dataTypeOID: buffer.readInteger(as: Int32.self)!,
-              dataTypeSize: buffer.readInteger(as: Int16.self)!,
-              typeModifier: buffer.readInteger(as: Int32.self)!,
-              formatCode: buffer.readInteger(as: Int16.self)!
-            )
-          }
-        )
-      case 0x74:  // 't'
-        message = .parameterDescription(
-          (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-            buffer.readInteger(as: Int32.self)!
-          }
-        )
-      case 0x44:  // 'D'
-        message = .dataRow(
-          (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-            let length = buffer.readInteger(as: Int32.self)!
-            if length == -1 {
-              return []
-            } else {
-              return buffer.readBytes(length: Int(length))!.map { $0 }
-            }
-          }
-        )
-      case 0x31:  // '1'
-        message = .parseComplete
-      case 0x32:  // '2'
-        message = .bindComplete
-      default:
-        // print("Unknown message type: \(messageType)")
-        buffer.moveReaderIndex(forwardBy: dataLength)
-        message = nil
+        buffer.moveReaderIndex(forwardBy: 5)  // Consume the message type and length
+
+        let message = PostgreSQLProtocolClient.decodeMessage(messageType, dataLength, &buffer)
+        onMessage(message)
       }
-      return message
     }
   }
 }
@@ -412,8 +455,8 @@ final actor PostgreSQLConnection {
 
     var scramSha256Authenticator: ScramSha256Authenticator?
 
-    loop: for try await message in protocolClient.messages {
-      switch message {
+    loop: while true {
+      switch try await protocolClient.receive() {
       case .authenticationOk:
         break
 
@@ -477,32 +520,71 @@ final actor PostgreSQLConnection {
     return result[0]
   }
 
-  func batchQuery(_ sql: String, _ parameter_lists: [[PostgreSQLEncodable]]) async throws
+  func batchQuery(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws
     -> [PostgreSQLRow]
   {
-    let (_, rows) = try await query_(sql, parameter_lists)
+    let (_, rows) = try await query_(sql, batches)
     return rows
   }
 
   @discardableResult
-  func batchExecute(_ sql: String, _ parameter_lists: [[PostgreSQLEncodable]]) async throws
+  func batchExecute(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws
     -> [String]
   {
-    let (result, _) = try await query_(sql, parameter_lists)
+    let (result, _) = try await query_(sql, batches)
     return result
   }
 
-  private func query_(_ sql: String, _ parameter_lists: [[PostgreSQLEncodable]]) async throws
+  private func query_(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws
     -> ([String], [PostgreSQLRow])
   {
-    try await protocolClient.send(.parse("", sql))
-    try await protocolClient.send(.describe(variant: 83, ""))
+    let stmt = try await parseStmt(name: "", sql: sql)
+    for params in batches {
+      try await protocolClient.send(
+        .bind(
+          portalName: "",
+          statementName: stmt.name,
+          parameterFormatCodes: [Int16](repeating: 1, count: params.count),
+          parameterValues: zip(params, stmt.parameterOids).map {
+            try? $0.0.encodeForPostgreSQL(postgreSQLTypeOid: $0.1)
+          },
+          resultColumnFormatCodes: [Int16](repeating: 1, count: stmt.fields.count)
+        ))
+      try await protocolClient.send(.execute(""))
+      // try await protocolClient.send(.flush)
+    }
+
+    try await protocolClient.send(.sync)
+
+    var commandTags: [String] = []
+    var rows: [PostgreSQLRow] = []
+
+    loop: while true {
+      switch try await protocolClient.receive() {
+      case .commandComplete(let tag):
+        commandTags.append(tag)
+      case .dataRow(let columns):
+        rows.append(.init(fields: stmt.fields, columns: columns))
+      case .readyForQuery:
+        break loop
+      case .errorResponse(let fields):
+        throw PostgreSQLError.databaseError(fields: fields)
+      default: break
+      }
+    }
+
+    return (commandTags, rows)
+  }
+
+  private func parseStmt(name: String, sql: String) async throws -> PostgreSQLStatement {
+    try await protocolClient.send(.parse(name, sql))
+    try await protocolClient.send(.describe(variant: 83, name))
     try await protocolClient.send(.flush)
 
     var fields: [PostgreSQLFieldDescription]?
     var parameterOids: [Int32]?
-    loop: for try await message in protocolClient.messages {
-      switch message {
+    loop: while true {
+      switch try await protocolClient.receive() {
       case .parseComplete:
         break
       case .rowDescription(let descriptions):
@@ -516,44 +598,55 @@ final actor PostgreSQLConnection {
         break
       }
     }
-    for parameters in parameter_lists {
-      try await protocolClient.send(
-        .bind(
-          portalName: "",
-          statementName: "",
-          parameterFormatCodes: [Int16](repeating: 1, count: parameters.count),
-          parameterValues: zip(parameters, parameterOids ?? []).map {
-            try? encodeParameter($0.0, typeOid: $0.1)
-          },
-          resultColumnFormatCodes: [Int16](repeating: 1, count: fields?.count ?? 0)
-        ))
-      try await protocolClient.send(.execute(""))
-      try await protocolClient.send(.sync)
-    }
-
-    var commendTags: [String] = []
-    var rows: [PostgreSQLRow] = []
-
-    loop: for try await message in protocolClient.messages {
-      switch message {
-      case .dataRow(let columns):
-        rows.append(.init(fields: fields!, columns: columns))
-      case .commandComplete(let commandTag):
-        commendTags.append(commandTag)
-      case .readyForQuery:
-        break loop
-      case .errorResponse(let fields):
-        throw PostgreSQLError.databaseError(fields: fields)
-      default: break
-      }
-    }
-
-    return (commendTags, rows)
+    return PostgreSQLStatement(name: name, fields: fields!, parameterOids: parameterOids!)
   }
 
-  private func encodeParameter(_ parameter: PostgreSQLEncodable, typeOid: Int32) throws -> [UInt8]?
-  {
-    return try parameter.encodeForPostgreSQL(postgreSQLTypeOid: typeOid)
+  // private func execStmt(
+  //   portalName: String, stmt: PostgreSQLStatement, params: [PostgreSQLEncodable]
+  // ) async throws -> String {
+  //   try await protocolClient.send(
+  //     .bind(
+  //       portalName: portalName,
+  //       statementName: stmt.name,
+  //       parameterFormatCodes: [Int16](repeating: 1, count: params.count),
+  //       parameterValues: zip(params, stmt.parameterOids).map {
+  //         try? $0.0.encodeForPostgreSQL(postgreSQLTypeOid: $0.1)
+  //       },
+  //       resultColumnFormatCodes: [Int16](repeating: 1, count: stmt.fields.count)
+  //     ))
+  //   try await protocolClient.send(.execute(portalName))
+  //   try await protocolClient.send(.flush)
+
+  //   var commandTag: String?
+  //   loop: for try await message in protocolClient.messages {
+  //     switch message {
+  //     case .commandComplete(let tag):
+  //       commandTag = tag
+  //     case .bindComplete:
+  //       break
+  //     case .errorResponse(let fields):
+  //       throw PostgreSQLError.databaseError(fields: fields)
+  //     default:
+  //       break
+  //     }
+  //   }
+  //   return commandTag!
+  // }
+
+  // private func sync() async throws {
+  //   try await protocolClient.send(.sync)
+  // }
+}
+
+class PostgreSQLStatement {
+  let name: String
+  let fields: [PostgreSQLFieldDescription]
+  let parameterOids: [Int32]
+
+  init(name: String, fields: [PostgreSQLFieldDescription], parameterOids: [Int32]) {
+    self.name = name
+    self.fields = fields
+    self.parameterOids = parameterOids
   }
 }
 
