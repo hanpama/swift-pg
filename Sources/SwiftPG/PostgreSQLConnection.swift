@@ -450,10 +450,15 @@ final class PostgreSQLProtocolClient: Sendable {
 // MARK: - Connection
 
 final actor PostgreSQLConnection {
+  let eventLoopGroup: EventLoopGroup
   let protocolClient: PostgreSQLProtocolClient
-  var task: Task<Any, Error>?
+  var task: Task<Any, Error>? = nil
 
-  private init(protocolClient: PostgreSQLProtocolClient) {
+  private init(
+    eventLoopGroup: EventLoopGroup,
+    protocolClient: PostgreSQLProtocolClient
+  ) {
+    self.eventLoopGroup = eventLoopGroup
     self.protocolClient = protocolClient
   }
 
@@ -515,7 +520,7 @@ final actor PostgreSQLConnection {
       }
     }
 
-    return PostgreSQLConnection(protocolClient: protocolClient)
+    return PostgreSQLConnection(eventLoopGroup: eventLoopGroup, protocolClient: protocolClient)
   }
 
   func close() async throws {
@@ -526,39 +531,69 @@ final actor PostgreSQLConnection {
   func query(_ sql: String, _ parameters: [PostgreSQLEncodable] = []) async throws
     -> PostgreSQLRows
   {
-    let stmt = try await parseStmt(name: "", sql: sql)
-    try await execStmt(portalName: "", stmt: stmt, params: parameters)
-    try await sync()
-    let rows = try await openRowStream(stmt: stmt)
-    return rows
+    var continuation: PostgreSQLRows.Continuation?
+    let stream = PostgreSQLRows { continuation = $0 }
+
+    try await withTask {
+      do {
+        let stmt = try await self.parseStmt(name: "", sql: sql)
+        try await self.execStmt(portalName: "", stmt: stmt, params: parameters)
+        try await self.sync()
+        while let row = try await self.receiveRow(stmt: stmt) {
+          continuation!.yield(row)
+        }
+        continuation!.finish()
+      } catch {
+        continuation!.finish(throwing: error)
+      }
+    }
+
+    return stream
   }
 
   func execute(_ sql: String, _ parameters: [PostgreSQLEncodable] = []) async throws {
-    let stmt = try await parseStmt(name: "", sql: sql)
-    try await execStmt(portalName: "", stmt: stmt, params: parameters)
-    try await sync()
-    try await drainUntilReadyForQuery()
+    try await withTask {
+      let stmt = try await self.parseStmt(name: "", sql: sql)
+      try await self.execStmt(portalName: "", stmt: stmt, params: parameters)
+      try await self.sync()
+      try await self.drainUntilReadyForQuery()
+    }
   }
 
-  func batchQuery(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws
+  func batchQuery(_ sql: String, _ batches: any Sequence<[PostgreSQLEncodable]>) async throws
     -> PostgreSQLRows
   {
-    let stmt = try await parseStmt(name: "", sql: sql)
-    for parameters in batches {
-      try await execStmt(portalName: "", stmt: stmt, params: parameters)
+    var continuation: PostgreSQLRows.Continuation?
+    let stream = PostgreSQLRows { continuation = $0 }
+
+    try await withTask {
+      do {
+        let stmt = try await self.parseStmt(name: "", sql: sql)
+        for parameters in batches {
+          try await self.execStmt(portalName: "", stmt: stmt, params: parameters)
+        }
+        try await self.sync()
+        while let row = try await self.receiveRow(stmt: stmt) {
+          continuation!.yield(row)
+        }
+        continuation!.finish()
+      } catch {
+        continuation!.finish(throwing: error)
+      }
     }
-    try await sync()
-    let rows = try await openRowStream(stmt: stmt)
-    return rows
+
+    return stream
   }
 
-  func batchExecute(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws {
-    let stmt = try await parseStmt(name: "", sql: sql)
-    for parameters in batches {
-      try await execStmt(portalName: "", stmt: stmt, params: parameters)
+  func batchExecute(_ sql: String, _ batches: any Sequence<[PostgreSQLEncodable]>) async throws {
+    try await withTask {
+      let stmt = try await self.parseStmt(name: "", sql: sql)
+      for parameters in batches {
+        try await self.execStmt(portalName: "", stmt: stmt, params: parameters)
+      }
+      try await self.sync()
+      try await self.drainUntilReadyForQuery()
     }
-    try await sync()
-    try await drainUntilReadyForQuery()
   }
 
   private func parseStmt(name: String, sql: String) async throws -> PostgreSQLStatement {
@@ -606,22 +641,17 @@ final actor PostgreSQLConnection {
     try await protocolClient.send(.sync)
   }
 
-  private func openRowStream(stmt: PostgreSQLStatement) async throws -> PostgreSQLRows {
-    return PostgreSQLRows { continuation in
-      self.task = Task {
-        loop: while true {
-          switch try await protocolClient.receive() {
-          case .dataRow(let columns):
-            continuation.yield(.init(fields: stmt.fields, columns: columns))
-          case .readyForQuery:
-            continuation.finish()
-            break loop
-          case .errorResponse(let fields):
-            continuation.finish(throwing: PostgreSQLError.databaseError(fields: fields))
-            break loop
-          default: break
-          }
-        }
+  private func receiveRow(stmt: PostgreSQLStatement) async throws -> PostgreSQLRow? {
+    loop: while true {
+      switch try await protocolClient.receive() {
+      case .dataRow(let columns):
+        return .init(fields: stmt.fields, columns: columns)
+      case .readyForQuery:
+        return nil
+      case .errorResponse(let fields):
+        throw PostgreSQLError.databaseError(fields: fields)
+      default:
+        break
       }
     }
   }
@@ -637,6 +667,17 @@ final actor PostgreSQLConnection {
         break
       }
     }
+  }
+
+  private func withTask<T>(_ body: @escaping () async throws -> T) async throws -> T {
+    if task != nil {
+      throw PostgreSQLError.clientError("Connection is busy")
+    }
+    task = Task {
+      defer { task = nil }
+      return try await body()
+    }
+    return try await task!.value as! T
   }
 }
 
@@ -1201,68 +1242,68 @@ struct ScramSha256AuthenticatorError: Error {
 
 // MARK: - Pool
 
-final actor PostgreSQLConnectionPool {
-  private let eventLoopGroup: EventLoopGroup
-  private let configuration: PostgreSQLConnectionConfiguration
-  private let maxConnections: Int
-  private var connections: [PostgreSQLConnection] = []
-  private var availableConnections: [PostgreSQLConnection] = []
+// final actor PostgreSQLConnectionPool {
+//   private let eventLoopGroup: EventLoopGroup
+//   private let configuration: PostgreSQLConnectionConfiguration
+//   private let maxConnections: Int
+//   private var connections: [PostgreSQLConnection] = []
+//   private var availableConnections: [PostgreSQLConnection] = []
 
-  init(
-    eventLoopGroup: EventLoopGroup,
-    configuration: PostgreSQLConnectionConfiguration,
-    maxConnections: Int
-  ) {
-    self.eventLoopGroup = eventLoopGroup
-    self.configuration = configuration
-    self.maxConnections = maxConnections
-  }
+//   init(
+//     eventLoopGroup: EventLoopGroup,
+//     configuration: PostgreSQLConnectionConfiguration,
+//     maxConnections: Int
+//   ) {
+//     self.eventLoopGroup = eventLoopGroup
+//     self.configuration = configuration
+//     self.maxConnections = maxConnections
+//   }
 
-  static func create(
-    eventLoopGroup: EventLoopGroup,
-    configuration: PostgreSQLConnectionConfiguration,
-    maxConnections: Int
-  ) -> PostgreSQLConnectionPool {
-    return PostgreSQLConnectionPool(
-      eventLoopGroup: eventLoopGroup,
-      configuration: configuration,
-      maxConnections: maxConnections
-    )
-  }
+//   static func create(
+//     eventLoopGroup: EventLoopGroup,
+//     configuration: PostgreSQLConnectionConfiguration,
+//     maxConnections: Int
+//   ) -> PostgreSQLConnectionPool {
+//     return PostgreSQLConnectionPool(
+//       eventLoopGroup: eventLoopGroup,
+//       configuration: configuration,
+//       maxConnections: maxConnections
+//     )
+//   }
 
-  func connect() async throws -> PostgreSQLConnection {
-    if let connection = availableConnections.popLast() {
-      return connection
-    }
+//   func connect() async throws -> PostgreSQLConnection {
+//     if let connection = availableConnections.popLast() {
+//       return connection
+//     }
 
-    if connections.count < maxConnections {
-      let connection = try await PostgreSQLConnection.connect(
-        eventLoopGroup: eventLoopGroup, configuration: configuration)
-      connections.append(connection)
-      return connection
-    }
+//     if connections.count < maxConnections {
+//       let connection = try await PostgreSQLConnection.connect(
+//         eventLoopGroup: eventLoopGroup, configuration: configuration)
+//       connections.append(connection)
+//       return connection
+//     }
 
-    while true {
-      for (index, connection) in connections.enumerated() {
-        if connection.isClosed {
-          connections.remove(at: index)
-          let newConnection = try await PostgreSQLConnection.connect(
-            eventLoopGroup: eventLoopGroup, configuration: configuration)
-          connections.append(newConnection)
-          return newConnection
-        }
-      }
-      await Task.sleep(nanoseconds: 1_000_000)
-    }
-  }
+//     while true {
+//       for (index, connection) in connections.enumerated() {
+//         if connection.isClosed {
+//           connections.remove(at: index)
+//           let newConnection = try await PostgreSQLConnection.connect(
+//             eventLoopGroup: eventLoopGroup, configuration: configuration)
+//           connections.append(newConnection)
+//           return newConnection
+//         }
+//       }
+//       await Task.sleep(nanoseconds: 1_000_000)
+//     }
+//   }
 
-  func release(_ connection: PostgreSQLConnection) {
-    availableConnections.append(connection)
-  }
+//   func release(_ connection: PostgreSQLConnection) {
+//     availableConnections.append(connection)
+//   }
 
-  func close() async throws {
-    for connection in connections {
-      try await connection.close()
-    }
-  }
-}
+//   func close() async throws {
+//     for connection in connections {
+//       try await connection.close()
+//     }
+//   }
+// }
