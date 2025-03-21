@@ -41,7 +41,7 @@ final class PostgreSQLCodecTest {
       ]
     )
 
-    for row in rows {
+    for try await row in rows {
       #expect(try row.get(Bool.self, at: 0))
       #expect(try row.get(Bool.self, at: 1))
       #expect(try row.get(Bool.self, at: 2))
@@ -91,7 +91,7 @@ final class PostgreSQLCodecTest {
       ]
     )
 
-    for row in rows {
+    for try await row in rows {
       #expect(try row.get(Bool.self, at: 0))
       #expect(try row.get(Bool.self, at: 1))
       #expect(try row.get(Bool.self, at: 2))
@@ -148,7 +148,7 @@ final class PostgreSQLCodecTest {
       ]
     )
 
-    for row in rows {
+    for try await row in rows {
       #expect(try row.get(Bool.self, at: 0))
       #expect(try row.get(Bool.self, at: 1))
       #expect(try row.get(Bool.self, at: 2))
@@ -185,7 +185,7 @@ final class PostgreSQLCodecTest {
       """
     )
 
-    for row: PostgreSQLRow in rows {
+    for try await row: PostgreSQLRow in rows {
       let val: String = try row.get(at: 4)
       print(val)
 
@@ -227,7 +227,7 @@ final class PostgreSQLCodecTest {
       """
     )
 
-    for row: PostgreSQLRow in rows {
+    for try await row: PostgreSQLRow in rows {
       #expect(try row.get(Bool?.self, at: 0) == nil)
       #expect(try row.get(Int64?.self, at: 1) == nil)
       #expect(try row.get(Int16?.self, at: 2) == nil)
@@ -264,7 +264,7 @@ final class PostgreSQLCodecTest {
       """
     )
 
-    for row in rows {
+    for try await row in rows {
       #expect(try row.get([Bool].self, at: 0) == [true, false])
       #expect(try row.get([Int64].self, at: 1) == [42, 43])
       #expect(try row.get([Int16].self, at: 2) == [42, 43])

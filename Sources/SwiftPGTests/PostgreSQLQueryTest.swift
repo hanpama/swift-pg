@@ -25,8 +25,10 @@ final class PostgreSQLQueryTest {
         [3],
       ])
 
-    let values = try rows.map { try $0.get(at: 0) as Int }
+    var values = rows.map { try $0.get(at: 0) as Int }.makeAsyncIterator()
 
-    #expect(values == [1, 2, 3])
+    #expect(try await values.next() == 1)
+    #expect(try await values.next() == 2)
+    #expect(try await values.next() == 3)
   }
 }

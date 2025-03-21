@@ -18,7 +18,7 @@ final class PostgreSQLConnectionTest {
       ))
     let rows = try await connection.query("SELECT VERSION();")
 
-    for row in rows {
+    for try await row in rows {
       let version: String = try row.get(String.self, at: 0)
       #expect(version.starts(with: "PostgreSQL"))
     }
@@ -38,7 +38,7 @@ final class PostgreSQLConnectionTest {
 
     let rows = try await connection.query("SELECT VERSION();")
 
-    for row in rows {
+    for try await row in rows {
       let version: String = try row.get(at: 0)
       #expect(version.starts(with: "PostgreSQL"))
     }

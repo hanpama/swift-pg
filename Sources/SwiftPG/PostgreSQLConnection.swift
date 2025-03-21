@@ -99,6 +99,13 @@ struct PostgreSQLBoundParameter {
   let value: [UInt8]
 }
 
+enum PostgreSQLError: Error {
+  case transportError(String)
+  case databaseError(fields: [PostgreSQLMessageField])
+  case clientError(String)
+  case codecError(String)
+}
+
 // MARK: - Protocol Client
 
 final class PostgreSQLProtocolClient: Sendable {
@@ -119,9 +126,14 @@ final class PostgreSQLProtocolClient: Sendable {
       .channelOption(.autoRead, value: false)
       .channelInitializer { channel in
         channel.pipeline.addHandler(
-          PostgreSQLMessageHandler { [continuation] message in
-            continuation!.yield(message)
-          }
+          PostgreSQLMessageHandler(
+            onMessage: { [continuation] message in
+              continuation!.yield(message)
+            },
+            onDisconnect: { [continuation] in
+              continuation!.finish()
+            }
+          )
         )
       }
 
@@ -136,7 +148,7 @@ final class PostgreSQLProtocolClient: Sendable {
   }
 
   func send(_ message: PostgreSQLFrontendMessage) async throws {
-    print("Sending message: \(message)")
+    // print("Sending message: \(message)")
     let buffer = encodeMessage(message: message)
     try await channel.writeAndFlush(buffer)
   }
@@ -153,7 +165,7 @@ final class PostgreSQLProtocolClient: Sendable {
         channel.read()
       }
     }
-    throw PostgreSQLError.transportError("No message received")
+    throw PostgreSQLError.transportError("Message stream closed")
   }
 
   private func encodeMessage(message: PostgreSQLFrontendMessage) -> ByteBuffer {
@@ -403,10 +415,14 @@ final class PostgreSQLProtocolClient: Sendable {
   private final class PostgreSQLMessageHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = ByteBuffer
     typealias OutboundOut = ByteBuffer
-    private let onMessage: @Sendable (PostgreSQLBackendMessage?) -> Void
+    typealias OnMessage = @Sendable (PostgreSQLBackendMessage?) -> Void
+    typealias OnDisconnect = @Sendable () -> Void
+    private let onMessage: OnMessage
+    private let onDisconnect: OnDisconnect
 
-    init(_ onMessage: @Sendable @escaping (PostgreSQLBackendMessage?) -> Void) {
+    init(onMessage: @escaping OnMessage, onDisconnect: @escaping OnDisconnect) {
       self.onMessage = onMessage
+      self.onDisconnect = onDisconnect
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -415,19 +431,18 @@ final class PostgreSQLProtocolClient: Sendable {
         guard let messageType = buffer.getInteger(at: buffer.readerIndex, as: UInt8.self),
           let messageLength = buffer.getInteger(at: buffer.readerIndex + 1, as: Int32.self)
         else {
-          onMessage(nil)
-          return
+          break
         }
         let dataLength = Int(messageLength) - 4  // 4 bytes for the length itself
         if buffer.readableBytes < 5 + dataLength {  // Not enough data yet
-          onMessage(nil)
-          return
+          break
         }
         buffer.moveReaderIndex(forwardBy: 5)  // Consume the message type and length
 
         let message = PostgreSQLProtocolClient.decodeMessage(messageType, dataLength, &buffer)
         onMessage(message)
       }
+      onMessage(nil)
     }
   }
 }
@@ -436,6 +451,7 @@ final class PostgreSQLProtocolClient: Sendable {
 
 final actor PostgreSQLConnection {
   let protocolClient: PostgreSQLProtocolClient
+  var task: Task<Any, Error>?
 
   private init(protocolClient: PostgreSQLProtocolClient) {
     self.protocolClient = protocolClient
@@ -508,72 +524,41 @@ final actor PostgreSQLConnection {
   }
 
   func query(_ sql: String, _ parameters: [PostgreSQLEncodable] = []) async throws
-    -> [PostgreSQLRow]
+    -> PostgreSQLRows
   {
-    let (_, rows) = try await query_(sql, [parameters])
+    let stmt = try await parseStmt(name: "", sql: sql)
+    try await execStmt(portalName: "", stmt: stmt, params: parameters)
+    try await sync()
+    let rows = try await openRowStream(stmt: stmt)
     return rows
   }
 
-  @discardableResult
-  func execute(_ sql: String, _ parameters: [PostgreSQLEncodable] = []) async throws -> String {
-    let (result, _) = try await query_(sql, [parameters])
-    return result[0]
+  func execute(_ sql: String, _ parameters: [PostgreSQLEncodable] = []) async throws {
+    let stmt = try await parseStmt(name: "", sql: sql)
+    try await execStmt(portalName: "", stmt: stmt, params: parameters)
+    try await sync()
+    try await drainUntilReadyForQuery()
   }
 
   func batchQuery(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws
-    -> [PostgreSQLRow]
+    -> PostgreSQLRows
   {
-    let (_, rows) = try await query_(sql, batches)
+    let stmt = try await parseStmt(name: "", sql: sql)
+    for parameters in batches {
+      try await execStmt(portalName: "", stmt: stmt, params: parameters)
+    }
+    try await sync()
+    let rows = try await openRowStream(stmt: stmt)
     return rows
   }
 
-  @discardableResult
-  func batchExecute(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws
-    -> [String]
-  {
-    let (result, _) = try await query_(sql, batches)
-    return result
-  }
-
-  private func query_(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws
-    -> ([String], [PostgreSQLRow])
-  {
+  func batchExecute(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws {
     let stmt = try await parseStmt(name: "", sql: sql)
-    for params in batches {
-      try await protocolClient.send(
-        .bind(
-          portalName: "",
-          statementName: stmt.name,
-          parameterFormatCodes: [Int16](repeating: 1, count: params.count),
-          parameterValues: zip(params, stmt.parameterOids).map {
-            try? $0.0.encodeForPostgreSQL(postgreSQLTypeOid: $0.1)
-          },
-          resultColumnFormatCodes: [Int16](repeating: 1, count: stmt.fields.count)
-        ))
-      try await protocolClient.send(.execute(""))
-      // try await protocolClient.send(.flush)
+    for parameters in batches {
+      try await execStmt(portalName: "", stmt: stmt, params: parameters)
     }
-
-    try await protocolClient.send(.sync)
-
-    var commandTags: [String] = []
-    var rows: [PostgreSQLRow] = []
-
-    loop: while true {
-      switch try await protocolClient.receive() {
-      case .commandComplete(let tag):
-        commandTags.append(tag)
-      case .dataRow(let columns):
-        rows.append(.init(fields: stmt.fields, columns: columns))
-      case .readyForQuery:
-        break loop
-      case .errorResponse(let fields):
-        throw PostgreSQLError.databaseError(fields: fields)
-      default: break
-      }
-    }
-
-    return (commandTags, rows)
+    try await sync()
+    try await drainUntilReadyForQuery()
   }
 
   private func parseStmt(name: String, sql: String) async throws -> PostgreSQLStatement {
@@ -601,41 +586,58 @@ final actor PostgreSQLConnection {
     return PostgreSQLStatement(name: name, fields: fields!, parameterOids: parameterOids!)
   }
 
-  // private func execStmt(
-  //   portalName: String, stmt: PostgreSQLStatement, params: [PostgreSQLEncodable]
-  // ) async throws -> String {
-  //   try await protocolClient.send(
-  //     .bind(
-  //       portalName: portalName,
-  //       statementName: stmt.name,
-  //       parameterFormatCodes: [Int16](repeating: 1, count: params.count),
-  //       parameterValues: zip(params, stmt.parameterOids).map {
-  //         try? $0.0.encodeForPostgreSQL(postgreSQLTypeOid: $0.1)
-  //       },
-  //       resultColumnFormatCodes: [Int16](repeating: 1, count: stmt.fields.count)
-  //     ))
-  //   try await protocolClient.send(.execute(portalName))
-  //   try await protocolClient.send(.flush)
+  private func execStmt(
+    portalName: String, stmt: PostgreSQLStatement, params: [PostgreSQLEncodable]
+  ) async throws {
+    try await protocolClient.send(
+      .bind(
+        portalName: portalName,
+        statementName: stmt.name,
+        parameterFormatCodes: [Int16](repeating: 1, count: params.count),
+        parameterValues: zip(params, stmt.parameterOids).map {
+          try? $0.0.encodeForPostgreSQL(postgreSQLTypeOid: $0.1)
+        },
+        resultColumnFormatCodes: [Int16](repeating: 1, count: stmt.fields.count)
+      ))
+    try await protocolClient.send(.execute(portalName))
+  }
 
-  //   var commandTag: String?
-  //   loop: for try await message in protocolClient.messages {
-  //     switch message {
-  //     case .commandComplete(let tag):
-  //       commandTag = tag
-  //     case .bindComplete:
-  //       break
-  //     case .errorResponse(let fields):
-  //       throw PostgreSQLError.databaseError(fields: fields)
-  //     default:
-  //       break
-  //     }
-  //   }
-  //   return commandTag!
-  // }
+  private func sync() async throws {
+    try await protocolClient.send(.sync)
+  }
 
-  // private func sync() async throws {
-  //   try await protocolClient.send(.sync)
-  // }
+  private func openRowStream(stmt: PostgreSQLStatement) async throws -> PostgreSQLRows {
+    return PostgreSQLRows { continuation in
+      self.task = Task {
+        loop: while true {
+          switch try await protocolClient.receive() {
+          case .dataRow(let columns):
+            continuation.yield(.init(fields: stmt.fields, columns: columns))
+          case .readyForQuery:
+            continuation.finish()
+            break loop
+          case .errorResponse(let fields):
+            continuation.finish(throwing: PostgreSQLError.databaseError(fields: fields))
+            break loop
+          default: break
+          }
+        }
+      }
+    }
+  }
+
+  private func drainUntilReadyForQuery() async throws {
+    loop: while true {
+      switch try await protocolClient.receive() {
+      case .readyForQuery:
+        break loop
+      case .errorResponse(let fields):
+        throw PostgreSQLError.databaseError(fields: fields)
+      default:
+        break
+      }
+    }
+  }
 }
 
 class PostgreSQLStatement {
@@ -655,7 +657,6 @@ typealias PostgreSQLRows = AsyncThrowingStream<PostgreSQLRow, Error>
 struct PostgreSQLRow {
   let fields: [PostgreSQLFieldDescription]
   let columns: [[UInt8]]
-  // let columnLocs: [String: Int]
 
   func get<T>(at index: Int) throws -> T {
     return try get(T.self, at: index)
@@ -671,12 +672,6 @@ struct PostgreSQLRow {
     return try type.init(
       postgreSQLTypeOid: fields[index].dataTypeOID, fromPostgreSQLData: columns[index]) as! T
   }
-}
-
-enum PostgreSQLError: Error {
-  case transportError(String)
-  case databaseError(fields: [PostgreSQLMessageField])
-  case codecError(String)
 }
 
 struct PostgreSQLConnectionConfiguration {
@@ -1202,4 +1197,72 @@ class ScramSha256Authenticator {
 
 struct ScramSha256AuthenticatorError: Error {
   let message: String
+}
+
+// MARK: - Pool
+
+final actor PostgreSQLConnectionPool {
+  private let eventLoopGroup: EventLoopGroup
+  private let configuration: PostgreSQLConnectionConfiguration
+  private let maxConnections: Int
+  private var connections: [PostgreSQLConnection] = []
+  private var availableConnections: [PostgreSQLConnection] = []
+
+  init(
+    eventLoopGroup: EventLoopGroup,
+    configuration: PostgreSQLConnectionConfiguration,
+    maxConnections: Int
+  ) {
+    self.eventLoopGroup = eventLoopGroup
+    self.configuration = configuration
+    self.maxConnections = maxConnections
+  }
+
+  static func create(
+    eventLoopGroup: EventLoopGroup,
+    configuration: PostgreSQLConnectionConfiguration,
+    maxConnections: Int
+  ) -> PostgreSQLConnectionPool {
+    return PostgreSQLConnectionPool(
+      eventLoopGroup: eventLoopGroup,
+      configuration: configuration,
+      maxConnections: maxConnections
+    )
+  }
+
+  func connect() async throws -> PostgreSQLConnection {
+    if let connection = availableConnections.popLast() {
+      return connection
+    }
+
+    if connections.count < maxConnections {
+      let connection = try await PostgreSQLConnection.connect(
+        eventLoopGroup: eventLoopGroup, configuration: configuration)
+      connections.append(connection)
+      return connection
+    }
+
+    while true {
+      for (index, connection) in connections.enumerated() {
+        if connection.isClosed {
+          connections.remove(at: index)
+          let newConnection = try await PostgreSQLConnection.connect(
+            eventLoopGroup: eventLoopGroup, configuration: configuration)
+          connections.append(newConnection)
+          return newConnection
+        }
+      }
+      await Task.sleep(nanoseconds: 1_000_000)
+    }
+  }
+
+  func release(_ connection: PostgreSQLConnection) {
+    availableConnections.append(connection)
+  }
+
+  func close() async throws {
+    for connection in connections {
+      try await connection.close()
+    }
+  }
 }
