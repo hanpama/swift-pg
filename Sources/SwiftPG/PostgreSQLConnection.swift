@@ -452,14 +452,16 @@ final class PostgreSQLProtocolClient: Sendable {
 final actor PostgreSQLConnection {
   let eventLoopGroup: EventLoopGroup
   let protocolClient: PostgreSQLProtocolClient
-  var task: Task<Any, Error>? = nil
+  let defaultTimeout: Duration
 
   private init(
     eventLoopGroup: EventLoopGroup,
-    protocolClient: PostgreSQLProtocolClient
+    protocolClient: PostgreSQLProtocolClient,
+    defaultTimeout: Duration = .seconds(30)
   ) {
     self.eventLoopGroup = eventLoopGroup
     self.protocolClient = protocolClient
+    self.defaultTimeout = defaultTimeout
   }
 
   static func connect(
@@ -524,17 +526,19 @@ final actor PostgreSQLConnection {
   }
 
   func close() async throws {
+    currentTaskGroup?.cancelAll()
     try await protocolClient.send(.terminate)
     try await protocolClient.close()
   }
 
-  func query(_ sql: String, _ parameters: [PostgreSQLEncodable] = []) async throws
+  func query(timeout: Duration? = nil, _ sql: String, _ parameters: [PostgreSQLEncodable] = [])
+    async throws
     -> PostgreSQLRows
   {
     var continuation: PostgreSQLRows.Continuation?
     let stream = PostgreSQLRows { continuation = $0 }
 
-    try await withTask {
+    try await withTask(timeout: timeout ?? defaultTimeout) {
       do {
         let stmt = try await self.parseStmt(name: "", sql: sql)
         try await self.execStmt(portalName: "", stmt: stmt, params: parameters)
@@ -551,8 +555,10 @@ final actor PostgreSQLConnection {
     return stream
   }
 
-  func execute(_ sql: String, _ parameters: [PostgreSQLEncodable] = []) async throws {
-    try await withTask {
+  func execute(timeout: Duration? = nil, _ sql: String, _ parameters: [PostgreSQLEncodable] = [])
+    async throws
+  {
+    try await withTask(timeout: timeout ?? defaultTimeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
       try await self.execStmt(portalName: "", stmt: stmt, params: parameters)
       try await self.sync()
@@ -560,13 +566,15 @@ final actor PostgreSQLConnection {
     }
   }
 
-  func batchQuery(_ sql: String, _ batches: any Sequence<[PostgreSQLEncodable]>) async throws
+  func batchQuery(
+    timeout: Duration? = nil, _ sql: String, _ batches: any Sequence<[PostgreSQLEncodable]>
+  ) async throws
     -> PostgreSQLRows
   {
     var continuation: PostgreSQLRows.Continuation?
     let stream = PostgreSQLRows { continuation = $0 }
 
-    try await withTask {
+    try await withTask(timeout: timeout ?? defaultTimeout) {
       do {
         let stmt = try await self.parseStmt(name: "", sql: sql)
         for parameters in batches {
@@ -585,8 +593,10 @@ final actor PostgreSQLConnection {
     return stream
   }
 
-  func batchExecute(_ sql: String, _ batches: any Sequence<[PostgreSQLEncodable]>) async throws {
-    try await withTask {
+  func batchExecute(
+    timeout: Duration? = nil, _ sql: String, _ batches: any Sequence<[PostgreSQLEncodable]>
+  ) async throws {
+    try await withTask(timeout: timeout ?? defaultTimeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
       for parameters in batches {
         try await self.execStmt(portalName: "", stmt: stmt, params: parameters)
@@ -669,15 +679,29 @@ final actor PostgreSQLConnection {
     }
   }
 
-  private func withTask<T>(_ body: @escaping () async throws -> T) async throws -> T {
-    if task != nil {
-      throw PostgreSQLError.clientError("Connection is busy")
+  var currentTaskGroup: ThrowingTaskGroup<Any, Error>?
+
+  private func withTask<T>(timeout: Duration, _ body: @escaping () async throws -> T)
+    async throws
+    -> T
+  {
+    return try await withThrowingTaskGroup(of: Any.self) { taskGroup in
+      if currentTaskGroup != nil {
+        throw PostgreSQLError.clientError("Connection is busy")
+      } else {
+        self.currentTaskGroup = taskGroup
+      }
+      taskGroup.addTask {
+        return try await body()
+      }
+      taskGroup.addTask {
+        try await Task.sleep(for: timeout)
+        throw PostgreSQLError.clientError("Timeout")
+      }
+      let result = try await taskGroup.next()!
+      taskGroup.cancelAll()
+      return result as! T
     }
-    task = Task {
-      defer { task = nil }
-      return try await body()
-    }
-    return try await task!.value as! T
   }
 }
 
