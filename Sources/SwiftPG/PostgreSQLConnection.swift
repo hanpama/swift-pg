@@ -3,6 +3,7 @@ import Crypto
 import Foundation
 import Logging
 import NIO
+import NIOSSL
 
 // MARK: - Types
 
@@ -109,60 +110,71 @@ enum PostgreSQLError: Error {
 
 // MARK: - Protocol Client
 
-final class PostgreSQLProtocolClient: Sendable {
-  private let channel: Channel
+private final actor PostgreSQLProtocolClient {
   private let messages: AsyncStream<PostgreSQLBackendMessage?>
+  private let bootstrap: ClientBootstrap
+  private var channel: Channel?
+  private var state: State = .created
+
+  enum State {
+    case created
+    case connected
+    case disconnected
+  }
 
   enum ConnectOptions {
     case hostPort(_ host: String, _ port: Int)
     case unixDomainSocket(path: String)
   }
 
-  init(_ loop: EventLoop, _ connectOpts: ConnectOptions) async throws {
+  init(_ loop: EventLoop) {
     var continuation: AsyncStream<PostgreSQLBackendMessage?>.Continuation?
-    let stream = AsyncStream { continuation = $0 }
-
-    let bootstrap = ClientBootstrap(group: loop)
+    messages = AsyncStream { continuation = $0 }
+    bootstrap = ClientBootstrap(group: loop)
       .channelOption(.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
       .channelOption(.autoRead, value: false)
       .channelInitializer { channel in
         channel.pipeline.addHandler(
           PostgreSQLMessageHandler(
-            onMessage: { [continuation] message in
-              continuation!.yield(message)
-            },
-            onDisconnect: { [continuation] in
-              continuation!.finish()
-            }
+            onMessage: { [continuation] message in continuation!.yield(message) },
+            onDisconnect: { [continuation] in continuation!.finish() }
           )
         )
       }
+  }
 
-    switch connectOpts {
-    case .hostPort(let host, let port):
-      self.channel = try await bootstrap.connect(host: host, port: port).get()
-    case .unixDomainSocket(let path):
-      self.channel = try await bootstrap.connect(unixDomainSocketPath: path).get()
+  func connect(host: String, port: Int) async throws {
+    guard state == .created else {
+      throw PostgreSQLError.clientError("ProtocolClient is already open")
     }
-    self.messages = stream
-    channel.read()
+    state = .connected
+    self.channel = try await bootstrap.connect(host: host, port: port).get()
+    channel!.read()
+  }
+
+  func connect(unixDomainSocketPath: String) async throws {
+    guard state == .created else {
+      throw PostgreSQLError.clientError("ProtocolClient is already open")
+    }
+    state = .connected
+    self.channel = try await bootstrap.connect(unixDomainSocketPath: unixDomainSocketPath).get()
+    channel!.read()
   }
 
   func send(_ message: PostgreSQLFrontendMessage) async throws {
-    guard channel.isActive else {
-      throw PostgreSQLError.transportError("Channel is closed")
-    }
     print("Sending message: \(message)")
-    let buffer = encodeMessage(message: message)
-    try await channel.writeAndFlush(buffer)
+    let buffer: ByteBuffer = encodeMessage(message: message)
+    try await getChannel().writeAndFlush(buffer)
   }
 
   func close() async throws {
+    let channel = try getChannel()
+    state = .disconnected
     try await channel.close()
   }
 
   func isClosed() -> Bool {
-    return !channel.isActive
+    return state == .disconnected
   }
 
   func receive() async throws -> PostgreSQLBackendMessage? {
@@ -170,10 +182,17 @@ final class PostgreSQLProtocolClient: Sendable {
       if let message = message {
         return message
       } else {
-        channel.read()
+        try getChannel().read()
       }
     }
     return nil
+  }
+
+  private func getChannel() throws -> Channel {
+    guard let channel = self.channel else {
+      throw PostgreSQLError.transportError("ProtocolClient is not connected")
+    }
+    return channel
   }
 
   private func encodeMessage(message: PostgreSQLFrontendMessage) -> ByteBuffer {
@@ -458,36 +477,40 @@ final class PostgreSQLProtocolClient: Sendable {
 // MARK: - Connection
 
 final actor PostgreSQLConnection {
-  let eventLoopGroup: EventLoopGroup
-  let protocolClient: PostgreSQLProtocolClient
-  let defaultTimeout: Duration?
+  private let eventLoopGroup: EventLoopGroup
+  private let defaultTimeout: Duration?
+  private let protocolClient: PostgreSQLProtocolClient
+  private var state: State = .created
 
-  private init(
+  enum State {
+    case created
+    case connected
+    case disconnected
+  }
+
+  init(
     eventLoopGroup: EventLoopGroup,
-    protocolClient: PostgreSQLProtocolClient,
     defaultTimeout: Duration? = nil
   ) {
     self.eventLoopGroup = eventLoopGroup
-    self.protocolClient = protocolClient
     self.defaultTimeout = defaultTimeout
+    self.protocolClient = PostgreSQLProtocolClient(eventLoopGroup.next())
   }
 
-  static func connect(
-    eventLoopGroup: EventLoopGroup,
-    configuration: PostgreSQLConnectionConfiguration
-  ) async throws -> PostgreSQLConnection {
-    let eventLoop = eventLoopGroup.next()
+  func connect(configs: PostgreSQLConnectionConfigs) async throws {
+    switch configs.socketAddress {
+    case .hostPort(let host, let port):
+      try await protocolClient.connect(host: host, port: port)
+    case .unixDomainSocket(let path):
+      try await protocolClient.connect(unixDomainSocketPath: path)
+    }
 
-    let protocolClient = try await PostgreSQLProtocolClient(
-      eventLoop, .hostPort(configuration.host, configuration.port)
-    )
-
-    try await protocolClient.send(.startupMessage(configuration.username, configuration.database))
+    try await protocolClient.send(.startupMessage(configs.username, configs.database))
 
     var scramSha256Authenticator: ScramSha256Authenticator?
 
     loop: while true {
-      switch try await protocolClient.receive() {
+      switch try await receive() {
       case .authenticationOk:
         break
 
@@ -496,7 +519,7 @@ final actor PostgreSQLConnection {
           throw PostgreSQLError.codecError("No supported SASL mechanism found")
         }
         scramSha256Authenticator = ScramSha256Authenticator(
-          username: configuration.username, password: configuration.password)
+          username: configs.username, password: configs.password)
 
         try await protocolClient.send(
           .saslInitialResponse(
@@ -529,20 +552,18 @@ final actor PostgreSQLConnection {
         break
       }
     }
-
-    return PostgreSQLConnection(eventLoopGroup: eventLoopGroup, protocolClient: protocolClient)
   }
 
   func close() async throws {
     currentTaskGroup?.cancelAll()
-    if !protocolClient.isClosed() {
+    if !(await protocolClient.isClosed()) {
       try await protocolClient.send(.terminate)
       try await protocolClient.close()
     }
   }
 
-  nonisolated func isClosed() -> Bool {
-    return protocolClient.isClosed()
+  func isClosed() async -> Bool {
+    return await protocolClient.isClosed()
   }
 
   func query(timeout: Duration? = nil, _ sql: String, _ parameters: [PostgreSQLEncodable] = [])
@@ -766,12 +787,18 @@ struct PostgreSQLRow {
   }
 }
 
-struct PostgreSQLConnectionConfiguration {
-  let host: String
-  let port: Int
+struct PostgreSQLConnectionConfigs {
+
+  let socketAddress: SocketAddress
   let username: String
   let password: String
   let database: String
+  let tls: TLSConfiguration?
+
+  enum SocketAddress {
+    case hostPort(host: String, port: Int)
+    case unixDomainSocket(path: String)
+  }
 }
 
 // MARK: - Codec
@@ -1295,7 +1322,7 @@ struct ScramSha256AuthenticatorError: Error {
 
 final actor PostgreSQLConnectionPool {
   private let eventLoopGroup: EventLoopGroup
-  private let configuration: PostgreSQLConnectionConfiguration
+  private let configuration: PostgreSQLConnectionConfigs
   private let maxConnections: Int
 
   private var connections: [ObjectIdentifier: PostgreSQLConnection] = [:]
@@ -1304,7 +1331,7 @@ final actor PostgreSQLConnectionPool {
 
   init(
     eventLoopGroup: EventLoopGroup,
-    configuration: PostgreSQLConnectionConfiguration,
+    configuration: PostgreSQLConnectionConfigs,
     maxConnections: Int
   ) {
     self.eventLoopGroup = eventLoopGroup
@@ -1312,9 +1339,9 @@ final actor PostgreSQLConnectionPool {
     self.maxConnections = maxConnections
   }
 
-  func acquire(timeout: Duration?) async throws -> PostgreSQLConnection {
+  func acquire(timeout: Duration? = nil) async throws -> PostgreSQLConnection {
     while let connection = availables.popLast() {
-      if connection.isClosed() {
+      if await connection.isClosed() {
         connections.removeValue(forKey: ObjectIdentifier(connection))
         continue
       }
@@ -1322,23 +1349,30 @@ final actor PostgreSQLConnectionPool {
     }
 
     if connections.count < maxConnections {
-      
-      return try await PostgreSQLConnection.connect(
-        eventLoopGroup: eventLoopGroup,
-        configuration: configuration
-      )
+      let connection = PostgreSQLConnection(eventLoopGroup: eventLoopGroup)
+      connections[ObjectIdentifier(connection)] = connection
+
+      try await connection.connect(configs: configuration)
+      return connection
     }
 
     let promise = eventLoopGroup.next().makePromise(of: PostgreSQLConnection.self)
     waiters.append(promise)
+    if let timeout = timeout {
+      Task {
+        try await Task.sleep(for: timeout)
+        promise.fail(PostgreSQLError.clientTimeout)
+      }
+    }
     return try await promise.futureResult.get()
   }
 
-  func release(_ connection: PostgreSQLConnection) {
-    if connection.isClosed() {
-      connections.remove(connection)
+  func release(_ connection: PostgreSQLConnection) async {
+    if await connection.isClosed() {
+      connections.removeValue(forKey: ObjectIdentifier(connection))
       return
     }
+
     if let promise = waiters.popLast() {
       promise.succeed(connection)
     } else {

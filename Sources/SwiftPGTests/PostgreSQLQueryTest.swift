@@ -6,16 +6,7 @@ import Testing
 
 final class PostgreSQLQueryTest {
   @Test func testConnectionSasl() async throws {
-    let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    let connection = try await PostgreSQLConnection.connect(
-      eventLoopGroup: loopGroup,
-      configuration: .init(
-        host: "localhost",
-        port: 6451,
-        username: "postgres",
-        password: "postgres",
-        database: "postgres"
-      ))
+    let connection = try await createConnectionSASL()
 
     let rows = try await connection.batchQuery(
       "SELECT $1::int8;",

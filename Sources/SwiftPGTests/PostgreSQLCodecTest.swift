@@ -7,7 +7,7 @@ import Testing
 final class PostgreSQLCodecTest {
 
   @Test func testEncoding() async throws {
-    let connection = try await createConnection()
+    let connection = try await createConnectionSASL()
 
     let rows = try await connection.query(
       """
@@ -58,7 +58,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testEncodingNulls() async throws {
-    let connection: PostgreSQLConnection = try await createConnection()
+    let connection: PostgreSQLConnection = try await createConnectionSASL()
     let rows = try await connection.query(
       """
       SELECT
@@ -108,7 +108,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testEncodingArrays() async throws {
-    let connection = try await createConnection()
+    let connection = try await createConnectionSASL()
 
     let rows = try await connection.query(
       """
@@ -165,7 +165,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecoding() async throws {
-    let connection = try await createConnection()
+    let connection = try await createConnectionSASL()
 
     let rows = try await connection.query(
       """
@@ -207,7 +207,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingNulls() async throws {
-    let connection = try await createConnection()
+    let connection = try await createConnectionSASL()
 
     let rows = try await connection.query(
       """
@@ -244,7 +244,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingArrays() async throws {
-    let connection = try await createConnection()
+    let connection = try await createConnectionSASL()
 
     let rows = try await connection.query(
       """
@@ -288,18 +288,5 @@ final class PostgreSQLCodecTest {
       #expect(try row.get([Int].self, at: 10) == [42, 43])
       #expect(try row.get([Int].self, at: 11) == [42, 43])
     }
-  }
-
-  private func createConnection() async throws -> PostgreSQLConnection {
-    let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    return try await PostgreSQLConnection.connect(
-      eventLoopGroup: loopGroup,
-      configuration: .init(
-        host: "localhost",
-        port: 6451,
-        username: "postgres",
-        password: "postgres",
-        database: "postgres"
-      ))
   }
 }
