@@ -4,14 +4,11 @@ import Foundation
 import Logging
 import NIO
 import NIOSSL
+import X509
 
 // MARK: - Types
 
 enum PostgreSQLFrontendMessage {
-  case startupMessage(_ user: String, _ database: String)
-  case saslInitialResponse(mechanism: String, initialResponse: String?)
-  case saslResponse(_ response: String)
-  case parse(_ statementName: String, _ sql: String)
   case bind(
     portalName: String,
     statementName: String,
@@ -19,10 +16,14 @@ enum PostgreSQLFrontendMessage {
     parameterValues: [[UInt8]?],
     resultColumnFormatCodes: [Int16]
   )
+  case close(variant: UInt8, _ name: String)
   case describe(variant: UInt8, _ name: String)
   case execute(_ portalName: String)
-  case close(variant: UInt8, _ name: String)
   case flush
+  case parse(_ statementName: String, _ sql: String)
+  case saslInitialResponse(mechanism: String, initialResponse: String?)
+  case saslResponse(_ response: String)
+  case startupMessage(_ user: String, _ database: String)
   case sync
   case terminate
 }
@@ -61,6 +62,7 @@ enum PostgreSQLBackendMessage {
   case portalSuspended
   case readyForQuery(_ transactionStatus: UInt8)
   case rowDescription(_ fields: [PostgreSQLFieldDescription])
+
   case unknown  // Placeholder for unknown message types
   case unknownAuthentication  // Placeholder for unknown authentication message types
 }
@@ -115,6 +117,7 @@ private final actor PostgreSQLProtocolClient {
   private let bootstrap: ClientBootstrap
   private var channel: Channel?
   private var state: State = .created
+  private var cert: NIOSSLCertificate?
 
   enum State {
     case created
@@ -161,6 +164,19 @@ private final actor PostgreSQLProtocolClient {
     channel!.read()
   }
 
+  func enableTLS(host: String, _ tlsConfiguration: TLSConfiguration) async throws {
+    guard let channel = self.channel else {
+      throw PostgreSQLError.transportError("ProtocolClient is not connected")
+    }
+    let sslContext = try NIOSSLContext(configuration: tlsConfiguration)
+    let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
+    try await channel.pipeline.addHandler(sslHandler, position: .first).get()
+  }
+
+  func getTLSCertificate() -> NIOSSLCertificate? {
+    return cert
+  }
+
   func send(_ message: PostgreSQLFrontendMessage) async throws {
     print("Sending message: \(message)")
     let buffer: ByteBuffer = encodeMessage(message: message)
@@ -199,59 +215,6 @@ private final actor PostgreSQLProtocolClient {
     var buffer = ByteBuffer()
 
     switch message {
-    case .startupMessage(let user, let database):
-      var body = ByteBuffer()
-      body.writeInteger(Int32(196608))  // Protocol version number (3.0)
-      body.writeString("user")
-      body.writeInteger(0, as: UInt8.self)
-      body.writeString(user)
-      body.writeInteger(0, as: UInt8.self)
-      body.writeString("database")
-      body.writeInteger(0, as: UInt8.self)
-      body.writeString(database)
-      body.writeInteger(0, as: UInt8.self)
-      body.writeInteger(0, as: UInt8.self)  // End of parameters
-
-      let messageLength = Int32(body.readableBytes + 4)
-      buffer.writeInteger(messageLength)
-      buffer.writeBuffer(&body)
-
-    case .saslInitialResponse(let mechanism, let initialResponse):
-      var body = ByteBuffer()
-      body.writeString(mechanism)
-      body.writeInteger(0, as: UInt8.self)
-      if let initialResponse = initialResponse {
-        body.writeInteger(Int32(initialResponse.utf8.count))
-        body.writeString(initialResponse)
-      } else {
-        body.writeInteger(-1)
-      }
-
-      let messageLength = Int32(body.readableBytes + 4)
-      buffer.writeInteger(UInt8(ascii: "p"))
-      buffer.writeInteger(messageLength)
-      buffer.writeBuffer(&body)
-
-    case .saslResponse(let response):
-      buffer.writeInteger(UInt8(ascii: "p"))
-
-      let messageLength = Int32(response.utf8.count + 4)
-      buffer.writeInteger(messageLength)
-      buffer.writeString(response)
-
-    case .parse(let statementName, let sql):
-      var body = ByteBuffer()
-      body.writeString(statementName)
-      body.writeInteger(0, as: UInt8.self)
-      body.writeString(sql)
-      body.writeInteger(0, as: UInt8.self)
-      body.writeInteger(Int16(0))  // No parameter types
-
-      let messageLength = Int32(body.readableBytes + 4)
-      buffer.writeInteger(UInt8(ascii: "P"))
-      buffer.writeInteger(messageLength)
-      buffer.writeBuffer(&body)
-
     case .bind(
       let portalName,
       let statementName,
@@ -287,6 +250,17 @@ private final actor PostgreSQLProtocolClient {
       buffer.writeInteger(messageLength)
       buffer.writeBuffer(&body)
 
+    case .close(let variant, let name):
+      var body = ByteBuffer()
+      body.writeInteger(variant)
+      body.writeString(name)
+      body.writeInteger(0, as: UInt8.self)
+
+      let messageLength = Int32(body.readableBytes + 4)
+      buffer.writeInteger(UInt8(ascii: "C"))
+      buffer.writeInteger(messageLength)
+      buffer.writeBuffer(&body)
+
     case .describe(let variant, let name):
       var body = ByteBuffer()
       body.writeInteger(variant)
@@ -313,20 +287,62 @@ private final actor PostgreSQLProtocolClient {
       buffer.writeInteger(messageLength)
       buffer.writeBuffer(&body)
 
-    case .close(let variant, let name):
-      var body = ByteBuffer()
-      body.writeInteger(variant)
-      body.writeString(name)
-      body.writeInteger(0, as: UInt8.self)
-
-      let messageLength = Int32(body.readableBytes + 4)
-      buffer.writeInteger(UInt8(ascii: "C"))
-      buffer.writeInteger(messageLength)
-      buffer.writeBuffer(&body)
-
     case .flush:
       buffer.writeInteger(UInt8(ascii: "H"))
       buffer.writeInteger(Int32(4))
+
+    case .parse(let statementName, let sql):
+      var body = ByteBuffer()
+      body.writeString(statementName)
+      body.writeInteger(0, as: UInt8.self)
+      body.writeString(sql)
+      body.writeInteger(0, as: UInt8.self)
+      body.writeInteger(Int16(0))  // No parameter types
+
+      let messageLength = Int32(body.readableBytes + 4)
+      buffer.writeInteger(UInt8(ascii: "P"))
+      buffer.writeInteger(messageLength)
+      buffer.writeBuffer(&body)
+
+    case .saslInitialResponse(let mechanism, let initialResponse):
+      var body = ByteBuffer()
+      body.writeString(mechanism)
+      body.writeInteger(0, as: UInt8.self)
+      if let initialResponse = initialResponse {
+        body.writeInteger(Int32(initialResponse.utf8.count))
+        body.writeString(initialResponse)
+      } else {
+        body.writeInteger(-1)
+      }
+
+      let messageLength = Int32(body.readableBytes + 4)
+      buffer.writeInteger(UInt8(ascii: "p"))
+      buffer.writeInteger(messageLength)
+      buffer.writeBuffer(&body)
+
+    case .saslResponse(let response):
+      buffer.writeInteger(UInt8(ascii: "p"))
+
+      let messageLength = Int32(response.utf8.count + 4)
+      buffer.writeInteger(messageLength)
+      buffer.writeString(response)
+
+    case .startupMessage(let user, let database):
+      var body = ByteBuffer()
+      body.writeInteger(Int32(196608))  // Protocol version number (3.0)
+      body.writeString("user")
+      body.writeInteger(0, as: UInt8.self)
+      body.writeString(user)
+      body.writeInteger(0, as: UInt8.self)
+      body.writeString("database")
+      body.writeInteger(0, as: UInt8.self)
+      body.writeString(database)
+      body.writeInteger(0, as: UInt8.self)
+      body.writeInteger(0, as: UInt8.self)  // End of parameters
+
+      let messageLength = Int32(body.readableBytes + 4)
+      buffer.writeInteger(messageLength)
+      buffer.writeBuffer(&body)
 
     case .sync:
       buffer.writeInteger(UInt8(ascii: "S"))
@@ -343,7 +359,7 @@ private final actor PostgreSQLProtocolClient {
     _ messageType: UInt8, _ dataLength: Int, _ buffer: inout ByteBuffer
   ) -> PostgreSQLBackendMessage {
     let message: PostgreSQLBackendMessage
-    print("Receiving message type: \(messageType)")
+    // print("Receiving message type: \(messageType)")
 
     switch messageType {
     case 82:  // 'R'
@@ -436,6 +452,7 @@ private final actor PostgreSQLProtocolClient {
       buffer.moveReaderIndex(forwardBy: dataLength)
       message = .unknown
     }
+    print("Received message: \(message)")
     return message
   }
 
@@ -505,6 +522,14 @@ final actor PostgreSQLConnection {
       try await protocolClient.connect(unixDomainSocketPath: path)
     }
 
+    if let tls = configs.tls {
+      if case let .hostPort(host: host, _) = configs.socketAddress {
+        try await protocolClient.enableTLS(host: host, tls)
+      } else {
+        throw PostgreSQLError.clientError("TLS is not supported for Unix domain sockets")
+      }
+    }
+
     try await protocolClient.send(.startupMessage(configs.username, configs.database))
 
     var scramSha256Authenticator: ScramSha256Authenticator?
@@ -515,22 +540,24 @@ final actor PostgreSQLConnection {
         break
 
       case .authenticationSasl(let mechanisms):
-        guard mechanisms.contains("SCRAM-SHA-256") else {
-          throw PostgreSQLError.codecError("No supported SASL mechanism found")
-        }
-        scramSha256Authenticator = ScramSha256Authenticator(
-          username: configs.username, password: configs.password)
+        if mechanisms.contains("SCRAM-SHA-256") || mechanisms.contains("SCRAM-SHA-256-PLUS") {
+          scramSha256Authenticator = ScramSha256Authenticator(
+            username: configs.username, password: configs.password)
 
-        try await protocolClient.send(
-          .saslInitialResponse(
-            mechanism: "SCRAM-SHA-256",
-            initialResponse: scramSha256Authenticator!.formatClientFirstMessage()
+          try await protocolClient.send(
+            .saslInitialResponse(
+              mechanism: "SCRAM-SHA-256",
+              initialResponse: scramSha256Authenticator!.formatClientFirstMessage()
+            )
           )
-        )
+        } else {
+          throw PostgreSQLError.clientError(
+            "No supported SASL mechanism found. Supported: \(mechanisms)")
+        }
 
       case .authenticationSaslContinue(let challenge):
         guard let scramSha256Authenticator = scramSha256Authenticator else {
-          throw PostgreSQLError.codecError("Unexpected SASL continue message")
+          throw PostgreSQLError.clientError("Unexpected SASL continue message")
         }
         try scramSha256Authenticator.handleServerFirstMessage(challenge)
 
@@ -540,7 +567,7 @@ final actor PostgreSQLConnection {
 
       case .authenticationSaslFinal(let finalMessage):
         guard let scramSha256Authenticator = scramSha256Authenticator else {
-          throw PostgreSQLError.codecError("Unexpected SASL final message")
+          throw PostgreSQLError.clientError("Unexpected SASL final message")
         }
         try scramSha256Authenticator.handleServerFinalMessage(finalMessage)
 
@@ -771,8 +798,17 @@ struct PostgreSQLRow {
   let fields: [PostgreSQLFieldDescription]
   let columns: [[UInt8]]
 
-  func get<T>(at index: Int) throws -> T {
-    return try get(T.self, at: index)
+  func get<V>(at index: Int) throws -> V {
+    return try get(V.self, at: index)
+  }
+
+  func scan<each V>() throws -> (repeat each V) {
+    return try scan((repeat each V).self)
+  }
+
+  func scan<each V>(_ types: (repeat each V).Type) throws -> (repeat each V) {
+    var indexIterator = (0...columns.count).makeIterator()
+    return (repeat try get((each V).self, at: indexIterator.next()!))
   }
 
   func get<T>(_ type: T.Type, at index: Int) throws -> T {

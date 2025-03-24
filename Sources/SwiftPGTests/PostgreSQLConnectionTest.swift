@@ -13,6 +13,7 @@ final class PostgreSQLConnectionTest {
       let version: String = try row.get(String.self, at: 0)
       #expect(version.starts(with: "PostgreSQL"))
     }
+    try await connection.close()
   }
 
   @Test func testConnectionSasl() async throws {
@@ -24,5 +25,18 @@ final class PostgreSQLConnectionTest {
       let version: String = try row.get(at: 0)
       #expect(version.starts(with: "PostgreSQL"))
     }
+    try await connection.close()
+  }
+
+  @Test func testConnectionTls() async throws {
+    let connection = try await createConnectionTLS()
+
+    let rows = try await connection.query("SELECT VERSION();")
+
+    for try await row in rows {
+      let version: String = try row.get(at: 0)
+      #expect(version.starts(with: "PostgreSQL"))
+    }
+    try await connection.close()
   }
 }

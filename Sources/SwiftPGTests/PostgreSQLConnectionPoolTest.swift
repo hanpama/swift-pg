@@ -13,7 +13,8 @@ final class PostgreSQLConnectionPoolTest {
         socketAddress: .hostPort(host: "localhost", port: 6451),
         username: "postgres",
         password: "postgres",
-        database: "postgres"
+        database: "postgres",
+        tls: nil
       ),
       maxConnections: 3
     )
