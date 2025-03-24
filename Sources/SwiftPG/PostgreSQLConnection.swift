@@ -493,7 +493,7 @@ private final actor PostgreSQLProtocolClient {
 
 // MARK: - Connection
 
-final actor PostgreSQLConnection {
+public final actor PostgreSQLConnection {
   private let eventLoopGroup: EventLoopGroup
   private let defaultTimeout: Duration?
   private let protocolClient: PostgreSQLProtocolClient
@@ -780,7 +780,7 @@ final actor PostgreSQLConnection {
   }
 }
 
-class PostgreSQLStatement {
+public class PostgreSQLStatement {
   let name: String
   let fields: [PostgreSQLFieldDescription]
   let parameterOids: [Int32]
@@ -792,9 +792,17 @@ class PostgreSQLStatement {
   }
 }
 
-typealias PostgreSQLRows = AsyncThrowingStream<PostgreSQLRow, Error>
+public typealias PostgreSQLRows = AsyncThrowingStream<PostgreSQLRow, Error>
 
-struct PostgreSQLRow {
+extension PostgreSQLRows {
+  public func decode<each V>(_ type: (repeat each V).Type) async throws -> AsyncThrowingMapSequence<
+    Self, (repeat each V)
+  > {
+    return self.map { try $0.decode((repeat each V).self) }
+  }
+}
+
+public struct PostgreSQLRow {
   let fields: [PostgreSQLFieldDescription]
   let columns: [[UInt8]]
 
@@ -802,18 +810,69 @@ struct PostgreSQLRow {
     return try get(V.self, at: index)
   }
 
-  func scan<each V>() throws -> (repeat each V) {
-    return try scan((repeat each V).self)
+  func decode<each V>() throws -> (repeat each V) {
+    return try decode((repeat each V).self)
   }
 
-  func scan<each V>(_ types: (repeat each V).Type) throws -> (repeat each V) {
+  func decode<each V>(_ types: (repeat each V).Type) throws -> (repeat each V) {
     var indexIterator = (0...columns.count).makeIterator()
     return (repeat try get((each V).self, at: indexIterator.next()!))
   }
 
   func get<T>(_ type: T.Type, at index: Int) throws -> T {
     if type == Any.self {
-      throw PostgreSQLError.codecError("Cannot decode Any")
+      switch fields[index].dataTypeOID {
+      case 16:
+        return try Bool(postgreSQLTypeOid: 16, fromPostgreSQLData: columns[index]) as! T
+      case 1000:
+        return try [Bool](postgreSQLTypeOid: 1000, fromPostgreSQLData: columns[index]) as! T
+      case 21:
+        return try Int16(postgreSQLTypeOid: 21, fromPostgreSQLData: columns[index]) as! T
+      case 1005:
+        return try [Int16](postgreSQLTypeOid: 1005, fromPostgreSQLData: columns[index]) as! T
+      case 23:
+        return try Int32(postgreSQLTypeOid: 23, fromPostgreSQLData: columns[index]) as! T
+      case 1007:
+        return try [Int32](postgreSQLTypeOid: 1007, fromPostgreSQLData: columns[index]) as! T
+      case 20:
+        return try Int64(postgreSQLTypeOid: 20, fromPostgreSQLData: columns[index]) as! T
+      case 1016:
+        return try [Int64](postgreSQLTypeOid: 1016, fromPostgreSQLData: columns[index]) as! T
+      case 25:
+        return try String(postgreSQLTypeOid: 25, fromPostgreSQLData: columns[index]) as! T
+      case 1043:
+        return try String(postgreSQLTypeOid: 1043, fromPostgreSQLData: columns[index]) as! T
+      case 1009:
+        return try [String](postgreSQLTypeOid: 1009, fromPostgreSQLData: columns[index]) as! T
+      case 1015:
+        return try [String](postgreSQLTypeOid: 1015, fromPostgreSQLData: columns[index]) as! T
+      case 700:
+        return try Float(postgreSQLTypeOid: 700, fromPostgreSQLData: columns[index]) as! T
+      case 1021:
+        return try [Float](postgreSQLTypeOid: 1021, fromPostgreSQLData: columns[index]) as! T
+      case 701:
+        return try Double(postgreSQLTypeOid: 701, fromPostgreSQLData: columns[index]) as! T
+      case 1022:
+        return try [Double](postgreSQLTypeOid: 1022, fromPostgreSQLData: columns[index]) as! T
+      case 1700:
+        return try Decimal(postgreSQLTypeOid: 1700, fromPostgreSQLData: columns[index]) as! T
+      case 1231:
+        return try [Decimal](postgreSQLTypeOid: 1231, fromPostgreSQLData: columns[index]) as! T
+      case 1114:
+        return try Date(postgreSQLTypeOid: 1114, fromPostgreSQLData: columns[index]) as! T
+      case 1184:
+        return try Date(postgreSQLTypeOid: 1184, fromPostgreSQLData: columns[index]) as! T
+      case 1115:
+        return try [Date](postgreSQLTypeOid: 1115, fromPostgreSQLData: columns[index]) as! T
+      case 1185:
+        return try [Date](postgreSQLTypeOid: 1185, fromPostgreSQLData: columns[index]) as! T
+      case 2950:
+        return try UUID(postgreSQLTypeOid: 2950, fromPostgreSQLData: columns[index]) as! T
+      case 2951:
+        return try [UUID](postgreSQLTypeOid: 2951, fromPostgreSQLData: columns[index]) as! T
+      default:
+        throw PostgreSQLError.codecError("Cannot decode Any from \(fields[index].dataTypeOID)")
+      }
     }
     guard let type = type as? PostgreSQLDecodable.Type else {
       throw PostgreSQLError.codecError("Cannot decode \(type)")
@@ -1037,6 +1096,32 @@ extension Double: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       self = Double(bitPattern: bitPattern)
     } else {
       throw PostgreSQLError.codecError("Cannot decode Double from \(postgreSQLTypeOid)")
+    }
+  }
+}
+
+extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
+  static var postgreSQLArrayElementTypes: [Int32: Int32] { [1231: 1700] }
+
+  func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> [UInt8]? {
+    if postgreSQLTypeOid == 1700 {
+      let data = self.description.utf8.map { UInt8($0) }
+      return data + [0]  // Null-terminated
+    }
+    throw PostgreSQLError.codecError("Cannot encode Decimal as \(postgreSQLTypeOid)")
+  }
+
+  init(postgreSQLTypeOid: Int32, fromPostgreSQLData data: [UInt8]) throws {
+    if postgreSQLTypeOid == 1700 {
+      guard let string = String(bytes: data, encoding: .utf8) else {
+        throw PostgreSQLError.codecError("Invalid UTF-8 data for Decimal")
+      }
+      guard let decimal = Decimal(string: string) else {
+        throw PostgreSQLError.codecError("Invalid Decimal string: \(string)")
+      }
+      self = decimal
+    } else {
+      throw PostgreSQLError.codecError("Cannot decode Decimal from \(postgreSQLTypeOid)")
     }
   }
 }
@@ -1350,13 +1435,13 @@ class ScramSha256Authenticator {
   }
 }
 
-struct ScramSha256AuthenticatorError: Error {
+public struct ScramSha256AuthenticatorError: Error {
   let message: String
 }
 
 // MARK: - Pool
 
-final actor PostgreSQLConnectionPool {
+public final actor PostgreSQLConnectionPool {
   private let eventLoopGroup: EventLoopGroup
   private let configuration: PostgreSQLConnectionConfigs
   private let maxConnections: Int

@@ -186,9 +186,6 @@ final class PostgreSQLCodecTest {
     )
 
     for try await row: PostgreSQLRow in rows {
-      let val: String = try row.get(at: 4)
-      print(val)
-
       #expect(try row.get(Bool.self, at: 0) == true)
       #expect(try row.get(Int64.self, at: 1) == 42)
       #expect(try row.get(Int16.self, at: 2) == 42)
@@ -287,6 +284,52 @@ final class PostgreSQLCodecTest {
       )
       #expect(try row.get([Int].self, at: 10) == [42, 43])
       #expect(try row.get([Int].self, at: 11) == [42, 43])
+    }
+  }
+
+  @Test func testDecodingAny() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        true,
+        42::int8,
+        42::int2,
+        42::int4,
+        'Hello, world!'::text,
+        42::float4,
+        42::float8,
+        'Hello, world!'::varchar,
+        '1970-01-01 00:00:42'::timestamp,
+        '6f41c8bc-38aa-481d-9b1d-1d2d6c81789a'::uuid
+      """
+    )
+
+    for try await row: PostgreSQLRow in rows {
+      let v1: Any = try row.get(at: 0)
+      let v2: Any = try row.get(at: 1)
+      let v3: Any = try row.get(at: 2)
+      let v4: Any = try row.get(at: 3)
+      let v5: Any = try row.get(at: 4)
+      let v6: Any = try row.get(at: 5)
+      let v7: Any = try row.get(at: 6)
+      let v8: Any = try row.get(at: 7)
+      let v9: Any = try row.get(at: 8)
+      let v10: Any = try row.get(at: 9)
+
+      #expect(v1 as! Bool == true)
+      #expect(v2 as! Int64 == 42)
+      #expect(v3 as! Int16 == 42)
+      #expect(v4 as! Int32 == 42)
+      #expect(v5 as! String == "Hello, world!")
+      #expect(v6 as! Float == 42)
+      #expect(v7 as! Double == 42)
+      #expect(v8 as! String == "Hello, world!")
+      #expect(v9 as! Date == Date(timeIntervalSince1970: 42))
+      #expect(
+        v10 as! UUID == UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")
+      )
     }
   }
 }
