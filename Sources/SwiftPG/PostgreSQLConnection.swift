@@ -19,7 +19,7 @@ enum PostgreSQLFrontendMessage {
   )
   case close(variant: UInt8, _ name: String)
   case describe(variant: UInt8, _ name: String)
-  case execute(_ portalName: String)
+  case execute(_ portalName: String, _ rowLimit: Int32)
   case flush
   case parse(_ statementName: String, _ sql: String)
   case saslInitialResponse(mechanism: String, initialResponse: String?)
@@ -267,7 +267,7 @@ final actor PostgreSQLProtocolClient {
       buffer.writeInteger(messageLength)
       buffer.writeBuffer(&body)
 
-    case .execute(let portalName):
+    case .execute(let portalName, let rowLimit):
       var body = ByteBuffer()
       if portalName.isEmpty {
         body.writeInteger(0, as: UInt8.self)
@@ -275,7 +275,7 @@ final actor PostgreSQLProtocolClient {
         body.writeString(portalName)
         body.writeInteger(0, as: UInt8.self)
       }
-      body.writeInteger(Int32(0))  // No row limit
+      body.writeInteger(rowLimit)  // No row limit
 
       let messageLength = Int32(body.readableBytes + 4)
       buffer.writeInteger(UInt8(ascii: "E"))
@@ -585,7 +585,7 @@ public final actor PostgreSQLConnection {
   {
     return try await withTask(timeout: timeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
-      try await self.execStmt(portalName: "", stmt: stmt, params: params)
+      try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
       try await self.sync()
 
       var continuation: PostgreSQLRows.Continuation?
@@ -607,7 +607,7 @@ public final actor PostgreSQLConnection {
   {
     try await withTask(timeout: timeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
-      try await self.execStmt(portalName: "", stmt: stmt, params: params)
+      try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 1)
       try await self.sync()
       try await self.drainUntilReadyForQuery()
     }
@@ -621,7 +621,7 @@ public final actor PostgreSQLConnection {
     return try await withTask(timeout: timeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
       for params in batches {
-        try await self.execStmt(portalName: "", stmt: stmt, params: params)
+        try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
       }
       try await self.sync()
 
@@ -645,7 +645,7 @@ public final actor PostgreSQLConnection {
     try await withTask(timeout: timeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
       for params in batches {
-        try await self.execStmt(portalName: "", stmt: stmt, params: params)
+        try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 1)
       }
       try await self.sync()
       try await self.drainUntilReadyForQuery()
@@ -678,7 +678,7 @@ public final actor PostgreSQLConnection {
   }
 
   private func execStmt(
-    portalName: String, stmt: PostgreSQLStatement, params: [PostgreSQLEncodable]
+    portalName: String, stmt: PostgreSQLStatement, params: [PostgreSQLEncodable], rowLimit: Int32
   ) async throws {
     var paramsBuffer = ByteBuffer()
     for (oid, param) in zip(stmt.parameterOids, params) {
@@ -693,7 +693,7 @@ public final actor PostgreSQLConnection {
         parameterValues: paramsBuffer,
         resultColumnFormatCodes: [Int16](repeating: 1, count: stmt.fields.count)
       ))
-    try await protocolClient.send(.execute(portalName))
+    try await protocolClient.send(.execute(portalName, rowLimit))
   }
 
   private func sync() async throws {
@@ -703,8 +703,10 @@ public final actor PostgreSQLConnection {
   private func receiveRow(stmt: PostgreSQLStatement) async throws -> PostgreSQLRow? {
     loop: while true {
       switch try await receive() {
-      case .dataRow(let _, let columnData):
+      case .dataRow(_, let columnData):
         return .init(fields: stmt.fields, columns: columnData)
+      // case .portalSuspended:
+        // try await protocolClient.send(.execute("", 0))
       case .readyForQuery:
         return nil
       case .errorResponse(let fields):
@@ -787,18 +789,18 @@ public struct PostgreSQLParameters {
 public typealias PostgreSQLRows = AsyncThrowingStream<PostgreSQLRow, Error>
 
 extension PostgreSQLRows {
-  public func decode<each V>(_ type: (repeat each V).Type) -> AsyncThrowingMapSequence<
-    Self, (repeat each V)
-  > {
-    return self.map { try $0.decode((repeat each V).self) }
-  }
+  // public func decode<each V>(_ type: (repeat each V).Type) -> AsyncThrowingMapSequence<
+  //   Self, (repeat each V)
+  // > {
+  //   return self.map { try $0.decode((repeat each V).self) }
+  // }
 }
 
 public struct PostgreSQLRow {
   let fields: [PostgreSQLFieldDescription]
   let columns: ByteBuffer
 
-  public func decode<each V>(_ types: (repeat each V).Type...) throws -> (repeat each V) {
+  public func decode<each V>(_ types: (repeat each V).Type?) throws -> (repeat each V) {
     var buffer = columns
     var fieldsIterator: IndexingIterator<[PostgreSQLFieldDescription]> = fields.makeIterator()
     return (repeat try get((each V).self, fieldsIterator.next()!.dataTypeOID, &buffer))
@@ -857,151 +859,6 @@ public struct PostgreSQLConnectionConfigs {
 
 // MARK: - Codec
 
-// public struct PostgreSQLValue {
-//   let typeOid: Int32
-//   let data: Data
-
-//   enum Data {
-//     case null
-//     case scalar([UInt8])
-//     case array(hasNull: Bool, elems: [PostgreSQLValue])
-//   }
-
-//   func encode(buffer: inout ByteBuffer) {
-//     switch data {
-//     case .array(let hasNull, let elems):
-//       let shape = getArrayShape()
-//       buffer.writeInteger(Int32(shape.count), as: Int32.self)  // ndim
-//       buffer.writeInteger(hasNull ? 1 : 0, as: Int32.self)  // flag
-//       buffer.writeInteger(typeOid, as: Int32.self)  // element type oid
-//       for dim in shape {
-//         buffer.writeInteger(Int32(dim), as: Int32.self)  // dim
-//       }
-//       for elem in elems {
-//         elem.encodeValue(buffer: &buffer)
-//       }
-//     default:
-//       encodeValue(buffer: &buffer)
-//     }
-//   }
-
-//   private func encodeValue(buffer: inout ByteBuffer) {
-//     switch data {
-//     case .null:
-//       buffer.writeInteger(-1, as: Int32.self)
-//     case .scalar(let bytes):
-//       buffer.writeInteger(Int32(bytes.count), as: Int32.self)
-//       buffer.writeBytes(bytes)
-//     case .array(_, let elems):
-//       for elem in elems {
-//         elem.encodeValue(buffer: &buffer)
-//       }
-//     }
-//   }
-
-//   static func decode(from buffer: inout ByteBuffer) -> PostgreSQLValue {
-//     // let typeOid = buffer.readInteger(as: Int32.self)!
-//     // let length = buffer.readInteger(as: Int32.self)!
-//     // if length == -1 {
-//     //   return PostgreSQLValue(typeOid: typeOid, data: .null)
-//     // }
-//     // let bytes = buffer.readBytes(length: Int(length))!.map { $0 }
-//     // return PostgreSQLValue(typeOid: typeOid, data: .scalar(bytes))
-//   }
-
-//   func convertToAny() throws -> Any? {
-
-//   }
-
-//   private func getArrayShape() -> [Int] {
-//     switch data {
-//     case .array(_, let elems):
-//       return [elems.count] + (elems.first?.getArrayShape() ?? [])
-//     default:
-//       return []
-//     }
-//   }
-// }
-// public init(fromPostgreSQLData data: PostgreSQLValue) throws {
-//   if let elementTypeOid = Element.postgreSQLArrayElementTypes[data.typeOid] {
-//     var buffer = ByteBufferAllocator().buffer(capacity: data.bytes.count)
-//     buffer.writeBytes(data.bytes)
-
-//     guard let ndim = buffer.readInteger(as: Int32.self),
-//       let flags = buffer.readInteger(as: Int32.self),
-//       let elementOid = buffer.readInteger(as: Int32.self),
-//       let count = buffer.readInteger(as: Int32.self),
-//       let lbound = buffer.readInteger(as: Int32.self)
-//     else {
-//       throw PostgreSQLError.codecError("Invalid array data")
-//     }
-//     guard ndim == 1, flags == 0, elementOid == elementTypeOid, lbound == 1 else {
-//       throw PostgreSQLError.codecError("Invalid array data")
-//     }
-
-//     var elements: [Element?] = []
-//     for _ in 0..<count {
-//       guard let length = buffer.readInteger(as: Int32.self) else {
-//         throw PostgreSQLError.codecError("Invalid array data")
-//       }
-//       if length == -1 {
-//         elements.append(nil as Element?)
-//       } else {
-//         let data = buffer.readBytes(length: Int(length))!.map { $0 }
-//         let element = try Element.init(
-//           fromPostgreSQLData: .init(typeOid: elementTypeOid, bytes: data))
-//         elements.append(element)
-//       }
-//     }
-//     self = elements as! [Element]
-//   } else {
-//     throw PostgreSQLError.codecError("Cannot decode [\(Element.self)] from \(data.typeOid)")
-//   }
-// }
-// public func encode(buffer: inout ByteBuffer, isRoot: Bool = true) {
-//   switch data {
-//   case .null:
-//     buffer.writeInteger(-1, as: Int32.self)
-//   case .scalar(let bytes):
-//     buffer.writeInteger(Int32(bytes.count), as: Int32.self)
-//     buffer.writeBytes(bytes)
-//   // case .array(let values):
-// }
-
-// private func encodeArrayElements() {
-// }
-
-// public func encodeForPostgreSQL(postgreSQLTypeOid: Int32) throws -> PostgreSQLValue {
-//   if let elementTypeOid = Element.postgreSQLArrayElementTypes[postgreSQLTypeOid] {
-//     // var buffer = ByteBufferAllocator().buffer(capacity: 0)
-//     // buffer.writeInteger(Int32(1))  // ndim
-//     // buffer.writeInteger(Int32(0))  // flags
-//     // buffer.writeInteger(elementTypeOid)
-//     // buffer.writeInteger(Int32(self.count))
-//     // buffer.writeInteger(Int32(1))
-
-//     // for element in self {
-//     //   let data = try element.encodeForPostgreSQL(postgreSQLTypeOid: elementTypeOid)
-//     //   if data.bytes.isEmpty {
-//     //     buffer.writeInteger(Int32(-1))
-//     //   } else {
-//     //     buffer.writeInteger(Int32(data.bytes.count))
-//     //     buffer.writeBytes(data.bytes)
-//     //   }
-//     // }
-
-//     // return .init(
-//     //   typeOid: postgreSQLTypeOid,
-//     //   bytes: buffer.readBytes(length: buffer.readableBytes)!.map { $0 })
-
-//     return .init(
-//       typeOid: postgreSQLTypeOid,
-//       data: .array(try self.map { try $0.encodeForPostgreSQL(postgreSQLTypeOid: elementTypeOid) })
-//     )
-//   }
-//   throw PostgreSQLError.codecError("Cannot encode [\(Element.self)] as \(postgreSQLTypeOid)")
-// }
-
 public protocol PostgreSQLEncodable {
   func encode(typeOid: Int32, buffer: inout ByteBuffer) throws
 }
@@ -1053,7 +910,7 @@ extension Int16: PostgreSQLCodable, PostgreSQLCodableArrayElement {
   public func encode(typeOid: Int32, buffer: inout ByteBuffer) throws {
     if typeOid == 21 {
       buffer.writeInteger(Self.pgDataLength, as: Int32.self)
-      buffer.writeInteger(self.bigEndian, as: Int16.self)
+      buffer.writeInteger(self, as: Int16.self)
     } else {
       throw PostgreSQLError.codecError("Cannot encode Int16 as \(typeOid)")
     }
@@ -1064,7 +921,10 @@ extension Int16: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       guard Self.pgDataLength == buffer.readInteger(as: Int32.self) else {
         throw PostgreSQLError.codecError("Invalid data for Int16")
       }
-      self = buffer.readInteger(as: Int16.self)!.bigEndian
+      guard let value = buffer.readInteger(as: Int16.self) else {
+        throw PostgreSQLError.codecError("Invalid data for Int16")
+      }
+      self = value
     } else {
       throw PostgreSQLError.codecError("Cannot decode Int16 from \(pgTypeOid)")
     }
@@ -1084,7 +944,7 @@ extension Int32: PostgreSQLCodable, PostgreSQLCodableArrayElement {
   public func encode(typeOid: Int32, buffer: inout ByteBuffer) throws {
     if typeOid == 23 {
       buffer.writeInteger(Self.pgDataLength, as: Int32.self)
-      buffer.writeInteger(self.bigEndian, as: Int32.self)
+      buffer.writeInteger(self, as: Int32.self)
     } else {
       throw PostgreSQLError.codecError("Cannot encode Int32 as \(typeOid)")
     }
@@ -1095,7 +955,10 @@ extension Int32: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       guard Self.pgDataLength == buffer.readInteger(as: Int32.self) else {
         throw PostgreSQLError.codecError("Invalid data for Int32")
       }
-      self = buffer.readInteger(as: Int32.self)!.bigEndian
+      guard let value = buffer.readInteger(as: Int32.self) else {
+        throw PostgreSQLError.codecError("Invalid data for Int32")
+      }
+      self = value
     } else {
       throw PostgreSQLError.codecError("Cannot decode Int32 from \(pgTypeOid)")
     }
@@ -1503,18 +1366,18 @@ where Element: PostgreSQLCodableArrayElement, Element: PostgreSQLDecodable {
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     guard buffer.readInteger(as: Int32.self) != nil,  // size
       let ndim: Int32 = buffer.readInteger(as: Int32.self),
-      let flags = buffer.readInteger(as: Int32.self),
-      let elementOid = buffer.readInteger(as: Int32.self),
+      buffer.readInteger(as: Int32.self) != nil,  // frags
+      buffer.readInteger(as: Int32.self) != nil,  // elemTypeOid
       let count = buffer.readInteger(as: Int32.self),
       let lbound = buffer.readInteger(as: Int32.self)
     else {
       throw PostgreSQLError.codecError("Invalid array data")
     }
-    guard ndim == 1, flags == 0, lbound == 1 else {
+    guard ndim == 1, lbound == 1 else {
       throw PostgreSQLError.codecError("Invalid 1dim array data")
     }
     let elements = try (0..<count).map { _ in
-      try Element?(pgArrayTypeOid: elementOid, buffer: &buffer)
+      try Element?(pgArrayTypeOid: pgTypeOid, buffer: &buffer)
     }
     self = elements as! [Element]
   }

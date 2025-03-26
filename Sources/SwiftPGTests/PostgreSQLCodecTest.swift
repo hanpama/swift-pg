@@ -5,6 +5,9 @@ import Testing
 @testable import SwiftPG
 
 final class PostgreSQLCodecTest {
+
+  // MARK: - Bool
+
   @Test func testEncodingBool() async throws {
     let connection = try await createConnectionSASL()
 
@@ -25,7 +28,8 @@ final class PostgreSQLCodecTest {
         [true, false, nil] as [Bool?],
       ]
     )
-    for try await (got1, got2, got3, got4, got5) in rows.decode((Bool, Bool, Bool, Bool, Bool).self)
+    for try await (got1, got2, got3, got4, got5) in rows.decode(
+      (Bool, Bool, Bool, Bool, Bool).self)
     {
       #expect(got1)
       #expect(got2)
@@ -43,14 +47,288 @@ final class PostgreSQLCodecTest {
       SELECT
         true,
         false,
-        null::bool
+        null::bool,
+        array[true, false]::bool[],
+        array[true, false, null]::bool[]
       """
     )
 
-    for try await (got1, got2, got3) in rows.decode((Bool, Bool, Bool?).self) {
+    for try await (got1, got2, got3, got4, got5) in rows.decode(
+      (Bool, Bool, Bool?, [Bool], [Bool?]).self)
+    {
       #expect(got1 == true)
       #expect(got2 == false)
       #expect(got3 == nil)
+      #expect(got4 == [true, false])
+      #expect(got5 == [true, false, nil])
+    }
+  }
+
+  // MARK: - Int16
+
+  @Test func testEncodingInt16() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        $1::int2 = 42,
+        $2::int2 is null,
+        $3::int2[] = ARRAY[42, 43]::int2[],
+        $4::int2[] = ARRAY[42, 43, null]::int2[]
+      """,
+      [
+        Int16(42),
+        nil as Int16?,
+        [Int16(42), Int16(43)],
+        [Int16(42), Int16(43), nil] as [Int16?],
+      ]
+    )
+
+    for try await (got1, got2, got3, got4) in rows.decode(
+      (Bool, Bool, Bool, Bool).self)
+    {
+      #expect(got1)
+      #expect(got2)
+      #expect(got3)
+      #expect(got4)
+    }
+  }
+
+  @Test func testDecodingInt16() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        42::int2,
+        null::int2,
+        array[42, 43]::int2[],
+        array[42, 43, null]::int2[]
+      """
+    )
+
+    for try await (got1, got2, got3, got4) in rows.decode(
+      (Int16, Int16?, [Int16], [Int16?]).self)
+    {
+      #expect(got1 == 42)
+      #expect(got2 == nil)
+      #expect(got3 == [42, 43])
+      #expect(got4 == [42, 43, nil])
+    }
+  }
+
+  // MARK: - Int32
+
+  @Test func testEncodingInt32() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        $1::int4 = 42,
+        $2::int4 is null,
+        $3::int4[] = ARRAY[42, 43]::int4[],
+        $4::int4[] = ARRAY[42, 43, null]::int4[]
+      """,
+      [
+        Int32(42),
+        nil as Int32?,
+        [Int32(42), Int32(43)],
+        [Int32(42), Int32(43), nil] as [Int32?],
+      ]
+    )
+
+    for try await (got1, got2, got3, got4) in rows.decode(
+      (Bool, Bool, Bool, Bool).self)
+    {
+      #expect(got1)
+      #expect(got2)
+      #expect(got3)
+      #expect(got4)
+    }
+  }
+
+  @Test func testDecodingInt32() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        42::int4,
+        null::int4,
+        array[42, 43]::int4[],
+        array[42, 43, null]::int4[]
+      """
+    )
+
+    for try await (got1, got2, got3, got4) in rows.map({
+      try $0.decode((Int32, Int32?, [Int32], [Int32?]).self)
+    }) {
+      #expect(got1 == 42)
+      #expect(got2 == nil)
+      #expect(got3 == [42, 43])
+      #expect(got4 == [42, 43, nil])
+    }
+  }
+
+  // MARK: - Int64
+
+  @Test func testEncodingInt64() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        $1::int8 = 42,
+        $2::int8 is null,
+        $3::int8[] = ARRAY[42, 43]::int8[],
+        $4::int8[] = ARRAY[42, 43, null]::int8[]
+      """,
+      [
+        Int64(42),
+        nil as Int64?,
+        [Int64(42), Int64(43)],
+        [Int64(42), Int64(43), nil] as [Int64?],
+      ]
+    )
+
+    for try await (got1, got2, got3, got4) in rows.decode(
+      (Bool, Bool, Bool, Bool).self)
+    {
+      #expect(got1)
+      #expect(got2)
+      #expect(got3)
+      #expect(got4)
+    }
+  }
+
+  @Test func testDecodingInt64() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        42::int8,
+        null::int8,
+        array[42, 43]::int8[],
+        array[42, 43, null]::int8[]
+      """
+    )
+
+    for try await (got1, got2, got3, got4) in rows.decode(
+      (Int64, Int64?, [Int64], [Int64?]).self)
+    {
+      #expect(got1 == 42)
+      #expect(got2 == nil)
+      #expect(got3 == [42, 43])
+      #expect(got4 == [42, 43, nil])
+    }
+  }
+
+  // MARK: - Int
+
+  @Test func testEncodingIntFromInt4() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        $1::int4 = 42,
+        $2::int4 is null,
+        $3::int4[] = ARRAY[42, 43]::int4[],
+        $4::int4[] = ARRAY[42, 43, null]::int4[]
+      """,
+      [
+        Int(42),
+        nil as Int?,
+        [Int(42), Int(43)],
+        [Int(42), Int(43), nil] as [Int?],
+      ]
+    )
+
+    for try await (got1, got2, got3, got4) in rows.decode(
+      (Bool, Bool, Bool, Bool).self)
+    {
+      #expect(got1)
+      #expect(got2)
+      #expect(got3)
+      #expect(got4)
+    }
+  }
+
+  @Test func testDecodingIntToInt4() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        42::int4,
+        null::int4,
+        array[42, 43]::int4[],
+        array[42, 43, null]::int4[]
+      """
+    )
+
+    for try await (got1, got2, got3, got4) in rows.decode(
+      (Int, Int?, [Int], [Int?]).self)
+    {
+      #expect(got1 == 42)
+      #expect(got2 == nil)
+      #expect(got3 == [42, 43])
+      #expect(got4 == [42, 43, nil])
+    }
+  }
+
+  @Test func testEncodingIntFromInt8() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        $1::int8 = 42,
+        $2::int8 is null,
+        $3::int8[] = ARRAY[42, 43]::int8[],
+        $4::int8[] = ARRAY[42, 43, null]::int8[]
+      """,
+      [
+        Int(42),
+        nil as Int?,
+        [Int(42), Int(43)],
+        [Int(42), Int(43), nil] as [Int?],
+      ]
+    )
+
+    for try await (got1, got2, got3, got4) in rows.decode(
+      (Bool, Bool, Bool, Bool).self)
+    {
+      #expect(got1)
+      #expect(got2)
+      #expect(got3)
+      #expect(got4)
+    }
+  }
+
+  @Test func testDecodingIntToInt8() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        42::int8,
+        null::int8,
+        array[42, 43]::int8[],
+        array[42, 43, null]::int8[]
+      """
+    )
+
+    for try await (got1, got2, got3, got4) in rows.decode(
+      (Int, Int?, [Int], [Int?]).self)
+    {
+      #expect(got1 == 42)
+      #expect(got2 == nil)
+      #expect(got3 == [42, 43])
+      #expect(got4 == [42, 43, nil])
     }
   }
 
