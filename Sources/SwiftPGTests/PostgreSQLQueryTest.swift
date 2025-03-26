@@ -16,10 +16,19 @@ final class PostgreSQLQueryTest {
         [3],
       ])
 
-    var values = rows.map { try $0.get(at: 0) as Int }.makeAsyncIterator()
+    let values = rows.map {
+      row in 
+      let value = try row.decode(Int64.self)
+      print("Got value: \(value)")
+      return value
+    }
+    var iterator = values.makeAsyncIterator()
 
-    #expect(try await values.next() == 1)
-    #expect(try await values.next() == 2)
-    #expect(try await values.next() == 3)
+    
+
+    #expect(try await iterator.next() == 1)
+    #expect(try await iterator.next() == 2)
+    #expect(try await iterator.next() == 3)
+    #expect(try await iterator.next() == nil)
   }
 }

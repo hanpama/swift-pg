@@ -28,6 +28,8 @@ final class PostgreSQLTimeoutTest {
       throw err!
     }
 
+    #expect(await connection.isClosed())
+
     // Timeout closes the connection
     do {
       let _ = try await connection.query(
