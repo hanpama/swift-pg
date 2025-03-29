@@ -66,5 +66,5 @@ services:
         condition: service_healthy
       postgres_secure:
         condition: service_healthy
-      postgres_ssl:
-        condition: service_healthy
+      # postgres_ssl:
+      #   condition: service_healthy
