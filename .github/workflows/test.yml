@@ -1,0 +1,34 @@
+name: Run Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Run Swift Tests
+    runs-on: macos-latest # Swift development typically happens on macOS
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Start PostgreSQL Database
+      run: docker-compose up -d postgres_test
+
+    - name: Wait for PostgreSQL to be ready
+      run: |
+        echo "Waiting for PostgreSQL to start..."
+        until docker exec swift-pg-postgres_test-1 pg_isready -U testuser -d testdb -h localhost; do
+          sleep 1
+        done
+        echo "PostgreSQL started."
+
+    - name: Run Swift tests
+      run: swift test --enable-test-discovery
+
+    - name: Stop PostgreSQL Database
+      if: always() # Ensure this runs even if tests fail
+      run: docker-compose down
