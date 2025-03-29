@@ -11,7 +11,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Start Postgres service
-      run: docker compose up -d postgres
     - name: Run tests
       run: docker compose run test
