@@ -579,7 +579,7 @@ final class PostgreSQLCodecTest {
         $3::numeric = 987654321.123456789,
         $4::numeric = -1.414213,
         $5::numeric = -123456789.987654321,
-        $6::numeric = '0.000'::numeric,
+        $6::numeric = 0::numeric,
         $7::numeric = 'NaN'::numeric,
         $8::numeric[] = ARRAY[3.141592, -1.414213]::numeric[],
         $9::numeric[] = ARRAY[3.141592, -1.414213, null]::numeric[]
@@ -590,7 +590,7 @@ final class PostgreSQLCodecTest {
         Decimal(string: "987654321.123456789")!,
         Decimal(string: "-1.414213")!,
         Decimal(string: "-123456789.987654321")!,
-        Decimal(string: "0.000")!,
+        Decimal(string: "0")!,
         Decimal.nan,
         [
           Decimal(string: "3.141592")!,
@@ -627,25 +627,42 @@ final class PostgreSQLCodecTest {
     let rows = try await connection.query(
       """
       SELECT
+        42::numeric,
         3.141592::numeric,
-        null::numeric,
-        array[3.141592, -1.414213]::numeric[],
-        array[3.141592, -1.414213, null]::numeric[],
+        987654321.123456789::numeric,
+        -1.414213::numeric,
+        -123456789.987654321::numeric,
+        0::numeric,
         'NaN'::numeric,
-        '0.000'::numeric
+        array[3.141592, -1.414213]::numeric[],
+        array[3.141592, -1.414213, null]::numeric[]
       """
     )
 
     for try await row in rows {
-      typealias Row = (Decimal, Decimal?, [Decimal], [Decimal?], Decimal, Decimal)
-      let (got1, got2, got3, got4, got5, got6): Row = try row.decode()
+      typealias Row = (
+        Decimal, Decimal, Decimal, Decimal, Decimal, Decimal, Decimal, [Decimal], [Decimal?]
+      )
+      let (got1, got2, got3, got4, got5, got6, got7, got8, got9): Row = try row.decode()
 
-      #expect(got1 == Decimal(string: "3.141592")!)
-      #expect(got2 == nil)
-      #expect(got3 == [Decimal(string: "3.141592")!, Decimal(string: "-1.414213")!])
-      #expect(got4 == [Decimal(string: "3.141592")!, Decimal(string: "-1.414213")!, nil])
-      #expect(got5 == Decimal.nan)
-      #expect(got6 == Decimal(string: "0.000")!)
+      #expect(got1 == Decimal(string: "42")!)
+      #expect(got2 == Decimal(string: "3.141592")!)
+      #expect(got3 == Decimal(string: "987654321.123456789")!)
+      #expect(got4 == Decimal(string: "-1.414213")!)
+      #expect(got5 == Decimal(string: "-123456789.987654321")!)
+      #expect(got6 == Decimal(string: "0")!)
+      #expect(got7.isNaN)
+      #expect(
+        got8 == [
+          Decimal(string: "3.141592")!,
+          Decimal(string: "-1.414213")!,
+        ])
+      #expect(
+        got9 == [
+          Decimal(string: "3.141592")!,
+          Decimal(string: "-1.414213")!,
+          nil,
+        ])
     }
   }
 
@@ -721,349 +738,158 @@ final class PostgreSQLCodecTest {
     }
   }
 
-  // UUID
+  // MARK: - UUID
 
-  // @Test func testDecodingBool() async throws {
-  //   let connection = try await createConnectionSASL()
+  @Test func testEncodingUUID() async throws {
+    let connection = try await createConnectionSASL()
 
-  //   let rows = try await connection.query(
-  //     """
-  //     SELECT
-  //       true,
-  //       false
-  //     """
-  //   )
+    let rows = try await connection.query(
+      """
+      SELECT
+        $1::uuid = '6f41c8bc-38aa-481d-9b1d-1d2d6c81789a',
+        $2::uuid is null,
+        $3::uuid[] = ARRAY['6f41c8bc-38aa-481d-9b1d-1d2d6c81789a', '6f41c8bc-38aa-481d-9b1d-1d2d6c81789b']::uuid[],
+        $4::uuid[] = ARRAY['6f41c8bc-38aa-481d-9b1d-1d2d6c81789a', '6f41c8bc-38aa-481d-9b1d-1d2d6c81789b', null]::uuid[]
+      """,
+      [
+        UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")!,
+        nil as UUID?,
+        [
+          UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")!,
+          UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789b")!,
+        ],
+        [
+          UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")!,
+          UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789b")!,
+          nil,
+        ] as [UUID?],
+      ]
+    )
 
-  //   for try await (got1, got2) in rows.decode((Bool, Bool).self) {
-  //     #expect(got1)
-  //     #expect(got2)
-  //   }
-  // }
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool, Bool)
+      let (got1, got2, got3, got4): Row = try row.decode()
 
-  // @Test func testEncoding() async throws {
-  //   let connection = try await createConnectionSASL()
+      #expect(got1)
+      #expect(got2)
+      #expect(got3)
+      #expect(got4)
+    }
+  }
 
-  //   let rows = try await connection.query(
-  //     """
-  //     SELECT
-  //       $1::bool = true,
-  //       $2::int8 = 42,
-  //       $3::int2 = 42,
-  //       $4::int4 = 42,
-  //       $5::text = 'Hello, world!',
-  //       $6::float4 = 42,
-  //       $7::float8 = 42,
-  //       $8::varchar = 'Hello, world!',
-  //       $9::timestamp = '1970-01-01 00:00:42',
-  //       $10::uuid = '6f41c8bc-38aa-481d-9b1d-1d2d6c81789a',
-  //       $11::int4 = 42,
-  //       $12::int8 = 42
-  //     """,
-  //     [
-  //       true,
-  //       Int64(42),
-  //       Int16(42),
-  //       Int32(42),
-  //       "Hello, world!",
-  //       Float(42),
-  //       Double(42),
-  //       "Hello, world!",
-  //       Date(timeIntervalSince1970: 42),
-  //       UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")!,
-  //       Int(42),
-  //       Int(42),
-  //     ]
-  //   )
+  @Test func testDecodingUUID() async throws {
+    let connection = try await createConnectionSASL()
 
-  //   for try await row in rows {
-  //     #expect(try row.get(Bool.self, at: 0))
-  //     #expect(try row.get(Bool.self, at: 1))
-  //     #expect(try row.get(Bool.self, at: 2))
-  //     #expect(try row.get(Bool.self, at: 3))
-  //     #expect(try row.get(Bool.self, at: 4))
-  //     #expect(try row.get(Bool.self, at: 5))
-  //     #expect(try row.get(Bool.self, at: 6))
-  //     #expect(try row.get(Bool.self, at: 7))
-  //     #expect(try row.get(Bool.self, at: 8))
-  //     #expect(try row.get(Bool.self, at: 9))
-  //     #expect(try row.get(Bool.self, at: 10))
-  //     #expect(try row.get(Bool.self, at: 11))
-  //   }
-  // }
+    let rows = try await connection.query(
+      """
+      SELECT
+        '6f41c8bc-38aa-481d-9b1d-1d2d6c81789a'::uuid,
+        null::uuid,
+        array['6f41c8bc-38aa-481d-9b1d-1d2d6c81789a', '6f41c8bc-38aa-481d-9b1d-1d2d6c81789b']::uuid[],
+        array['6f41c8bc-38aa-481d-9b1d-1d2d6c81789a', '6f41c8bc-38aa-481d-9b1d-1d2d6c81789b', null]::uuid[]
+      """
+    )
 
-  // @Test func testEncodingNulls() async throws {
-  //   let connection: PostgreSQLConnection = try await createConnectionSASL()
-  //   let rows = try await connection.query(
-  //     """
-  //     SELECT
-  //       $1::bool is null,
-  //       $2::int8 is null,
-  //       $3::int2 is null,
-  //       $4::int4 is null,
-  //       $5::text is null,
-  //       $6::float4 is null,
-  //       $7::float8 is null,
-  //       $8::varchar is null,
-  //       $9::timestamp is null,
-  //       $10::uuid is null,
-  //       $11::int4 is null,
-  //       $12::int8 is null
-  //     """,
-  //     [
-  //       nil as Bool?,
-  //       nil as Int64?,
-  //       nil as Int16?,
-  //       nil as Int32?,
-  //       nil as String?,
-  //       nil as Float?,
-  //       nil as Double?,
-  //       nil as String?,
-  //       nil as Date?,
-  //       nil as UUID?,
-  //       nil as Int?,
-  //       nil as Int?,
-  //     ]
-  //   )
+    for try await row in rows {
+      typealias Row = (UUID, UUID?, [UUID], [UUID?])
+      let (got1, got2, got3, got4): Row = try row.decode()
 
-  //   for try await row in rows {
-  //     #expect(try row.get(Bool.self, at: 0))
-  //     #expect(try row.get(Bool.self, at: 1))
-  //     #expect(try row.get(Bool.self, at: 2))
-  //     #expect(try row.get(Bool.self, at: 3))
-  //     #expect(try row.get(Bool.self, at: 4))
-  //     #expect(try row.get(Bool.self, at: 5))
-  //     #expect(try row.get(Bool.self, at: 6))
-  //     #expect(try row.get(Bool.self, at: 7))
-  //     #expect(try row.get(Bool.self, at: 8))
-  //     #expect(try row.get(Bool.self, at: 9))
-  //     #expect(try row.get(Bool.self, at: 10))
-  //     #expect(try row.get(Bool.self, at: 11))
-  //   }
-  // }
+      #expect(got1 == UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")!)
+      #expect(got2 == nil)
+      #expect(
+        got3 == [
+          UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")!,
+          UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789b")!,
+        ])
+      #expect(
+        got4 == [
+          UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")!,
+          UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789b")!,
+          nil,
+        ])
+    }
+  }
 
-  // @Test func testEncodingArrays() async throws {
-  //   let connection = try await createConnectionSASL()
+  // MARK: - Any
 
-  //   let rows = try await connection.query(
-  //     """
-  //     SELECT
-  //       $1::bool[] = ARRAY[true, false]::bool[],
-  //       $2::int8[] = ARRAY[42, 43]::int8[],
-  //       $3::int2[] = ARRAY[42, 43]::int2[],
-  //       $4::int4[] = ARRAY[42, 43]::int4[],
-  //       $5::text[] = ARRAY['Hello', 'World']::text[],
-  //       $6::float4[] = ARRAY[42, 43]::float4[],
-  //       $7::float8[] = ARRAY[42, 43]::float8[],
-  //       $8::varchar[] = ARRAY['Hello', 'World']::varchar[],
-  //       $9::timestamp[] = ARRAY['1970-01-01 00:00:42', '1970-01-01 00:00:43']::timestamp[],
-  //       $10::uuid[] = ARRAY['6f41c8bc-38aa-481d-9b1d-1d2d6c81789a', '6f41c8bc-38aa-481d-9b1d-1d2d6c81789b']::uuid[],
-  //       $11::int4[] = ARRAY[42, 43]::int4[],
-  //       $12::int8[] = ARRAY[42, 43]::int8[]
-  //     """,
-  //     [
-  //       [true, false],
-  //       [Int64(42), Int64(43)],
-  //       [Int16(42), Int16(43)],
-  //       [Int32(42), Int32(43)],
-  //       ["Hello", "World"],
-  //       [Float(42), Float(43)],
-  //       [Double(42), Double(43)],
-  //       ["Hello", "World"],
-  //       [
-  //         Date(timeIntervalSince1970: 42),
-  //         Date(timeIntervalSince1970: 43),
-  //       ],
-  //       [
-  //         UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")!,
-  //         UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789b")!,
-  //       ],
-  //       [Int(42), Int(43)],
-  //       [Int(42), Int(43)],
-  //     ]
-  //   )
+  @Test func testEncodeAny() async throws {
+    let connection = try await createConnectionSASL()
 
-  //   for try await row in rows {
-  //     #expect(try row.get(Bool.self, at: 0))
-  //     #expect(try row.get(Bool.self, at: 1))
-  //     #expect(try row.get(Bool.self, at: 2))
-  //     #expect(try row.get(Bool.self, at: 3))
-  //     #expect(try row.get(Bool.self, at: 4))
-  //     #expect(try row.get(Bool.self, at: 5))
-  //     #expect(try row.get(Bool.self, at: 6))
-  //     #expect(try row.get(Bool.self, at: 7))
-  //     #expect(try row.get(Bool.self, at: 8))
-  //     #expect(try row.get(Bool.self, at: 9))
-  //     #expect(try row.get(Bool.self, at: 10))
-  //     #expect(try row.get(Bool.self, at: 11))
-  //   }
-  // }
+    let rows = try await connection.query(
+      """
+      SELECT
+        true::bool,
+        array[true, false]::bool[],
+        42::int2,
+        array[42, 43]::int2[],
+        42::int4,
+        array[42, 43]::int4[],
+        42::int8,
+        array[42, 43]::int8[],
+        'Hello, world!'::text,
+        'Hello, world!'::varchar,
+        array['Hello', 'World']::text[],
+        array['Hello', 'World']::varchar[],
+        42::float4,
+        array[42, 43]::float4[],
+        42::float8,
+        array[42, 43]::float8[],
+        42::numeric,
+        array[42, 43]::numeric[],
+        '1970-01-01 00:00:42'::timestamp,
+        array['1970-01-01 00:00:42', '1970-01-01 00:00:43']::timestamp[],
+        '6f41c8bc-38aa-481d-9b1d-1d2d6c81789a'::uuid,
+        array['6f41c8bc-38aa-481d-9b1d-1d2d6c81789a', '6f41c8bc-38aa-481d-9b1d-1d2d6c81789b']::uuid[]
+      """
+    )
 
-  // @Test func testDecoding() async throws {
-  //   let connection = try await createConnectionSASL()
+    for try await row in rows {
+      typealias Row = (
+        PostgreSQLDecodable, Any, Any, Any, Any,
+        Any, Any, Any, Any, Any,
+        Any, Any, Any, Any, Any,
+        Any, Any, Any, Any, Any,
+        Any, Any
+      )
+      let (
+        got1, got2, got3, got4, got5,
+        got6, got7, got8, got9, got10,
+        got11, got12, got13, got14, got15,
+        got16, got17, got18, got19, got20,
+        got21, got22
+      ): Row = try row.decode()
 
-  //   let rows = try await connection.query(
-  //     """
-  //     SELECT
-  //       true,
-  //       42::int8,
-  //       42::int2,
-  //       42::int4,
-  //       'Hello, world!'::text,
-  //       42::float4,
-  //       42::float8,
-  //       'Hello, world!'::varchar,
-  //       '1970-01-01 00:00:42'::timestamp,
-  //       '6f41c8bc-38aa-481d-9b1d-1d2d6c81789a'::uuid,
-  //       42::int4,
-  //       42::int8
-  //     """
-  //   )
-
-  //   for try await row: PostgreSQLRow in rows {
-  //     #expect(try row.get(Bool.self, at: 0) == true)
-  //     #expect(try row.get(Int64.self, at: 1) == 42)
-  //     #expect(try row.get(Int16.self, at: 2) == 42)
-  //     #expect(try row.get(Int32.self, at: 3) == 42)
-  //     #expect(try row.get(String.self, at: 4) == "Hello, world!")
-  //     #expect(try row.get(Float.self, at: 5) == 42)
-  //     #expect(try row.get(Double.self, at: 6) == 42)
-  //     #expect(try row.get(String.self, at: 7) == "Hello, world!")
-  //     #expect(try row.get(Date.self, at: 8) == Date(timeIntervalSince1970: 42))
-  //     #expect(
-  //       try row.get(UUID.self, at: 9) == UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")
-  //     )
-  //     #expect(try row.get(Int.self, at: 10) == 42)
-  //     #expect(try row.get(Int.self, at: 11) == 42)
-  //   }
-  // }
-
-  // @Test func testDecodingNulls() async throws {
-  //   let connection = try await createConnectionSASL()
-
-  //   let rows = try await connection.query(
-  //     """
-  //     SELECT
-  //       NULL::bool,
-  //       NULL::int8,
-  //       NULL::int2,
-  //       NULL::int4,
-  //       NULL::text,
-  //       NULL::float4,
-  //       NULL::float8,
-  //       NULL::varchar,
-  //       NULL::timestamp,
-  //       NULL::uuid,
-  //       NULL::int4,
-  //       NULL::int8
-  //     """
-  //   )
-
-  //   for try await row: PostgreSQLRow in rows {
-  //     #expect(try row.get(Bool?.self, at: 0) == nil)
-  //     #expect(try row.get(Int64?.self, at: 1) == nil)
-  //     #expect(try row.get(Int16?.self, at: 2) == nil)
-  //     #expect(try row.get(Int32?.self, at: 3) == nil)
-  //     #expect(try row.get(String?.self, at: 4) == nil)
-  //     #expect(try row.get(Float?.self, at: 5) == nil)
-  //     #expect(try row.get(Double?.self, at: 6) == nil)
-  //     #expect(try row.get(String?.self, at: 7) == nil)
-  //     #expect(try row.get(Date?.self, at: 8) == nil)
-  //     #expect(try row.get(UUID?.self, at: 9) == nil)
-  //     #expect(try row.get(Int?.self, at: 10) == nil)
-  //     #expect(try row.get(Int?.self, at: 11) == nil)
-  //   }
-  // }
-
-  // @Test func testDecodingArrays() async throws {
-  //   let connection = try await createConnectionSASL()
-
-  //   let rows = try await connection.query(
-  //     """
-  //     SELECT
-  //       ARRAY[true, false],
-  //       ARRAY[42, 43]::int8[],
-  //       ARRAY[42, 43]::int2[],
-  //       ARRAY[42, 43]::int4[],
-  //       ARRAY['Hello', 'World'],
-  //       ARRAY[42, 43]::float4[],
-  //       ARRAY[42, 43]::float8[],
-  //       ARRAY['Hello', 'World']::varchar[],
-  //       ARRAY['1970-01-01 00:00:42', '1970-01-01 00:00:43']::timestamp[],
-  //       ARRAY['6f41c8bc-38aa-481d-9b1d-1d2d6c81789a', '6f41c8bc-38aa-481d-9b1d-1d2d6c81789b']::uuid[],
-  //       ARRAY[42, 43]::int4[],
-  //       ARRAY[42, 43]::int8[]
-  //     """
-  //   )
-
-  //   for try await row in rows {
-  //     #expect(try row.get([Bool].self, at: 0) == [true, false])
-  //     #expect(try row.get([Int64].self, at: 1) == [42, 43])
-  //     #expect(try row.get([Int16].self, at: 2) == [42, 43])
-  //     #expect(try row.get([Int32].self, at: 3) == [42, 43])
-  //     #expect(try row.get([String].self, at: 4) == ["Hello", "World"])
-  //     #expect(try row.get([Float].self, at: 5) == [42, 43])
-  //     #expect(try row.get([Double].self, at: 6) == [42, 43])
-  //     #expect(try row.get([String].self, at: 7) == ["Hello", "World"])
-  //     #expect(
-  //       try row.get([Date].self, at: 8) == [
-  //         Date(timeIntervalSince1970: 42),
-  //         Date(timeIntervalSince1970: 43),
-  //       ]
-  //     )
-  //     #expect(
-  //       try row.get([UUID].self, at: 9) == [
-  //         UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")!,
-  //         UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789b")!,
-  //       ]
-  //     )
-  //     #expect(try row.get([Int].self, at: 10) == [42, 43])
-  //     #expect(try row.get([Int].self, at: 11) == [42, 43])
-  //   }
-  // }
-
-  // @Test func testDecodingAny() async throws {
-  //   let connection = try await createConnectionSASL()
-
-  //   let rows = try await connection.query(
-  //     """
-  //     SELECT
-  //       true,
-  //       42::int8,
-  //       42::int2,
-  //       42::int4,
-  //       'Hello, world!'::text,
-  //       42::float4,
-  //       42::float8,
-  //       'Hello, world!'::varchar,
-  //       '1970-01-01 00:00:42'::timestamp,
-  //       '6f41c8bc-38aa-481d-9b1d-1d2d6c81789a'::uuid
-  //     """
-  //   )
-
-  //   for try await row: PostgreSQLRow in rows {
-  //     let v1: Any = try row.get(at: 0)
-  //     let v2: Any = try row.get(at: 1)
-  //     let v3: Any = try row.get(at: 2)
-  //     let v4: Any = try row.get(at: 3)
-  //     let v5: Any = try row.get(at: 4)
-  //     let v6: Any = try row.get(at: 5)
-  //     let v7: Any = try row.get(at: 6)
-  //     let v8: Any = try row.get(at: 7)
-  //     let v9: Any = try row.get(at: 8)
-  //     let v10: Any = try row.get(at: 9)
-
-  //     #expect(v1 as! Bool == true)
-  //     #expect(v2 as! Int64 == 42)
-  //     #expect(v3 as! Int16 == 42)
-  //     #expect(v4 as! Int32 == 42)
-  //     #expect(v5 as! String == "Hello, world!")
-  //     #expect(v6 as! Float == 42)
-  //     #expect(v7 as! Double == 42)
-  //     #expect(v8 as! String == "Hello, world!")
-  //     #expect(v9 as! Date == Date(timeIntervalSince1970: 42))
-  //     #expect(
-  //       v10 as! UUID == UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")
-  //     )
-  //   }
-  // }
+      #expect(got1 as! Bool == true)
+      #expect(got2 as! [Bool] == [true, false])
+      #expect(got3 as! Int16 == 42)
+      #expect(got4 as! [Int16] == [42, 43])
+      #expect(got5 as! Int32 == 42)
+      #expect(got6 as! [Int32] == [42, 43])
+      #expect(got7 as! Int64 == 42)
+      #expect(got8 as! [Int64] == [42, 43])
+      #expect(got9 as! String == "Hello, world!")
+      #expect(got10 as! String == "Hello, world!")
+      #expect(got11 as! [String] == ["Hello", "World"])
+      #expect(got12 as! [String] == ["Hello", "World"])
+      #expect(got13 as! Float == 42)
+      #expect(got14 as! [Float] == [42, 43])
+      #expect(got15 as! Double == 42)
+      #expect(got16 as! [Double] == [42, 43])
+      #expect(got17 as! Decimal == Decimal(string: "42")!)
+      #expect(got18 as! [Decimal] == [Decimal(string: "42")!, Decimal(string: "43")!])
+      #expect(got19 as! Date == Date(timeIntervalSince1970: 42))
+      #expect(
+        got20 as! [Date] == [
+          Date(timeIntervalSince1970: 42),
+          Date(timeIntervalSince1970: 43),
+        ])
+      #expect(
+        got21 as! UUID == UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")!)
+      #expect(
+        got22 as! [UUID] == [
+          UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789a")!,
+          UUID(uuidString: "6f41c8bc-38aa-481d-9b1d-1d2d6c81789b")!,
+        ])
+    }
+  }
 }

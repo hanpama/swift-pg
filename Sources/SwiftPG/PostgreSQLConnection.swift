@@ -835,7 +835,7 @@ public struct PostgreSQLRow: Sendable {
     if let type = type as? PostgreSQLDecodable.Type {
       return try type.init(pgTypeOid: oid, buffer: &buf) as! T
     }
-    if type == Any.self {
+    if type == PostgreSQLDecodable.self || type == Any.self {
       switch oid {
       case 16: return try Bool?(pgTypeOid: oid, buffer: &buf) as! T
       case 1000: return try [Bool]?(pgTypeOid: oid, buffer: &buf) as! T
@@ -1179,18 +1179,26 @@ extension Double: PostgreSQLCodable, PostgreSQLCodableArrayElement {
 }
 
 extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
+  private enum Sign: Int16 {
+    case positive = 0
+    case negative = 16384
+    case nan = -16384
+    case posInfinity = -12288
+    case negInfinity = -4096
+  }
+
   public func encode(typeOid: Int32, buffer: inout ByteBuffer) throws {
     if typeOid == 1700 {
       let ndigits: Int16
       let weight: Int16
-      let sign: Int16
+      let sign: Sign
       var dscale: Int16
       var digits: [UInt16] = []
 
       if self.isNaN {
-        (ndigits, weight, sign, dscale) = (0, 0, -16384, 0)
+        (ndigits, weight, sign, dscale) = (0, 0, .nan, 0)
       } else if self.isZero {
-        (ndigits, weight, sign, dscale) = (0, 0, 0, 0)
+        (ndigits, weight, sign, dscale) = (0, 0, .positive, 0)
       } else {
         let parts = String(describing: self).split(separator: ".")
         let signedIntegerPart = parts[0]
@@ -1213,14 +1221,13 @@ extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
         digits = (expDigits + fracDigits).map { UInt16($0)! }
         ndigits = Int16(digits.count)
         weight = Int16(expDigits.count - 1)
-        sign = self.isSignMinus ? 16384 : 0
+        sign = self.isSignMinus ? .negative : .positive
         dscale = Int16(frac.count)
       }
-
       buffer.writeInteger(Int32(ndigits) * 2 + 8, as: Int32.self)
       buffer.writeInteger(ndigits, as: Int16.self)
       buffer.writeInteger(weight, as: Int16.self)
-      buffer.writeInteger(sign, as: Int16.self)
+      buffer.writeInteger(sign.rawValue, as: Int16.self)
       buffer.writeInteger(dscale, as: Int16.self)
       for digit in digits {
         buffer.writeInteger(digit, as: UInt16.self)
@@ -1231,13 +1238,6 @@ extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
     }
   }
 
-  // else if self.isInfinite && self.isSignMinus {
-  //         //  0xD000
-  //         (ndigits, weight, sign, dscale) = (0, 0, 16384, 0)
-  //       } else if self.isInfinite {
-  //         //  0xC000
-  //         (ndigits, weight, sign, dscale) = (0, 0, 0, 0)
-  //       }
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     if pgTypeOid == 1700 {
       guard buffer.readInteger(as: Int32.self) != nil else {
@@ -1246,6 +1246,7 @@ extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       guard let ndigits = buffer.readInteger(as: Int16.self),
         let weight = buffer.readInteger(as: Int16.self),
         let sign = buffer.readInteger(as: Int16.self),
+        let sign = Sign(rawValue: sign),
         buffer.readInteger(as: Int16.self) != nil  // dscale
       else {
         throw PostgreSQLError.codecError("Invalid data for Decimal")
@@ -1257,13 +1258,12 @@ extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
         }
         digits.append(digit)
       }
-      // Infinity unsupported
-      if sign == -16384 {
+      if case .posInfinity = sign, case .negInfinity = sign {
+        throw PostgreSQLError.codecError("Decimal infinity unsupported")
+      } else if case .nan = sign {
         self = Decimal.nan
-        return
       } else if ndigits == 0 {
         self = Decimal.zero
-        return
       } else {
         let unsignedString = digits.enumerated().map {
           String(format: "%04d", $1) + ($0 == weight ? "." : "")
@@ -1271,7 +1271,11 @@ extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
         guard let unsigned = Decimal(string: unsignedString) else {
           throw PostgreSQLError.codecError("Invalid data for Decimal")
         }
-        self = sign == 16384 ? -unsigned : unsigned
+        if sign == .negative {
+          self = -unsigned
+        } else {
+          self = unsigned
+        }
       }
     } else {
       throw PostgreSQLError.codecError("Cannot decode Decimal from \(pgTypeOid)")
@@ -1295,7 +1299,7 @@ extension Date: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       let microseconds = Int64((timeIntervalSince1970 - epochDifference) * 1_000_000)
 
       buffer.writeInteger(Self.pgDataLength)
-      buffer.writeInteger(microseconds.bigEndian, as: Int64.self)
+      buffer.writeInteger(microseconds, as: Int64.self)
     } else {
       throw PostgreSQLError.codecError("Cannot encode Date as \(typeOid)")
     }
@@ -1311,7 +1315,7 @@ extension Date: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       }
       let epochDifference: TimeInterval = 946_684_800
       self = Date(
-        timeIntervalSince1970: TimeInterval(microseconds.bigEndian) / 1_000_000 + epochDifference)
+        timeIntervalSince1970: TimeInterval(microseconds) / 1_000_000 + epochDifference)
     } else {
       throw PostgreSQLError.codecError("Cannot decode Date from \(pgTypeOid)")
     }

@@ -20,8 +20,8 @@ final class PostgreSQLConnectionPoolTest {
     )
 
     let conn1 = try await pool.acquire()
-    let conn2 = try await pool.acquire()
-    let conn3 = try await pool.acquire()
+    let _ = try await pool.acquire()
+    let _ = try await pool.acquire()
 
     // Pool is full
     var conn4: PostgreSQLConnection? = nil
@@ -34,6 +34,6 @@ final class PostgreSQLConnectionPoolTest {
     await pool.release(conn1)
 
     try await Task.sleep(nanoseconds: 1_000_000)
-    #expect(conn4 != nil)
+    #expect(ObjectIdentifier(conn4!) == ObjectIdentifier(conn1))
   }
 }
