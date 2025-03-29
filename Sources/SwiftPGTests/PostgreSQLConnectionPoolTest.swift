@@ -9,13 +9,7 @@ final class PostgreSQLConnectionPoolTest {
     let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     let pool = PostgreSQLConnectionPool(
       eventLoopGroup: loopGroup,
-      configuration: .init(
-        socketAddress: .hostPort(host: "localhost", port: 6451),
-        username: "postgres",
-        password: "postgres",
-        database: "postgres",
-        tls: nil
-      ),
+      configuration: getSecureConfigs(),
       maxConnections: 3
     )
 

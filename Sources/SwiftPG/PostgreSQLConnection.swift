@@ -4,8 +4,6 @@ import Logging
 import NIO
 import NIOSSL
 
-// import
-
 // MARK: - Types
 
 enum PostgreSQLFrontendMessage: Sendable {
@@ -486,7 +484,7 @@ public final actor PostgreSQLConnection {
 
   private enum State {
     case initialized
-    case ready
+    case idle
     case busy
     case closed
   }
@@ -558,7 +556,7 @@ public final actor PostgreSQLConnection {
         try scramSha256Authenticator.handleServerFinalMessage(finalMessage)
 
       case .readyForQuery:
-        state = .ready
+        state = .idle
         break loop
       case .errorResponse(let fields):
         throw PostgreSQLError.databaseError(fields: fields)
@@ -592,22 +590,22 @@ public final actor PostgreSQLConnection {
   )
     async throws -> PostgreSQLRows
   {
-    guard state == .ready else {
-      throw PostgreSQLError.clientError("Connection is not ready")
+    guard state == .idle else {
+      throw PostgreSQLError.clientError("Connection is not idle")
     }
     return try await withTask(timeout: timeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
-      try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
+      try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: rowBuffer)
       try await self.sync()
-      return PostgreSQLRows(connection: self, stmt: stmt, rowLimit: 0)
+      return PostgreSQLRows(connection: self, stmt: stmt, rowLimit: rowBuffer)
     }
   }
 
   public func execute(timeout: Duration? = nil, _ sql: String, _ params: [PostgreSQLEncodable] = [])
     async throws
   {
-    guard state == .ready else {
-      throw PostgreSQLError.clientError("Connection is not ready")
+    guard state == .idle else {
+      throw PostgreSQLError.clientError("Connection is not idle")
     }
     try await withTask(timeout: timeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
@@ -622,8 +620,8 @@ public final actor PostgreSQLConnection {
   )
     async throws -> PostgreSQLRows
   {
-    guard state == .ready else {
-      throw PostgreSQLError.clientError("Connection is not ready")
+    guard state == .idle else {
+      throw PostgreSQLError.clientError("Connection is not idle")
     }
     return try await withTask(timeout: timeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
@@ -638,8 +636,8 @@ public final actor PostgreSQLConnection {
   public func batchExecute(
     timeout: Duration? = nil, _ sql: String, _ batches: [[PostgreSQLEncodable]]
   ) async throws {
-    guard state == .ready else {
-      throw PostgreSQLError.clientError("Connection is not ready")
+    guard state == .idle else {
+      throw PostgreSQLError.clientError("Connection is not idle")
     }
     try await withTask(timeout: timeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
@@ -656,11 +654,10 @@ public final actor PostgreSQLConnection {
       switch try await receive() {
       case .dataRow(_, let columnData):
         return columnData
-      // return .init(fields: stmt.fields, columns: columnData)
       case .portalSuspended:
         try await protocolClient.send(.execute("", rowLimit))
       case .readyForQuery:
-        state = .ready
+        state = .idle
         return nil
       case .errorResponse(let fields):
         throw PostgreSQLError.databaseError(fields: fields)
@@ -674,7 +671,7 @@ public final actor PostgreSQLConnection {
     loop: while true {
       switch try await receive() {
       case .readyForQuery:
-        state = .ready
+        state = .idle
         break loop
       case .errorResponse(let fields):
         throw PostgreSQLError.databaseError(fields: fields)
@@ -1464,6 +1461,69 @@ extension PostgreSQLCodableArrayElement where Self: PostgreSQLDecodable {
   }
 }
 
+// MARK: - Pool
+
+public final actor PostgreSQLConnectionPool {
+  private let eventLoopGroup: EventLoopGroup
+  private let configuration: PostgreSQLConnectionConfigs
+  private let maxConnections: Int
+
+  private var connections: [ObjectIdentifier: PostgreSQLConnection] = [:]
+  private var availables: [PostgreSQLConnection] = []
+  private var waiters: [EventLoopPromise<PostgreSQLConnection>] = []
+
+  init(
+    eventLoopGroup: EventLoopGroup,
+    configuration: PostgreSQLConnectionConfigs,
+    maxConnections: Int
+  ) {
+    self.eventLoopGroup = eventLoopGroup
+    self.configuration = configuration
+    self.maxConnections = maxConnections
+  }
+
+  func acquire(timeout: Duration? = nil) async throws -> PostgreSQLConnection {
+    while let connection = availables.popLast() {
+      if await connection.isClosed() {
+        connections.removeValue(forKey: ObjectIdentifier(connection))
+        continue
+      }
+      return connection
+    }
+
+    if connections.count < maxConnections {
+      let connection = PostgreSQLConnection(eventLoopGroup: eventLoopGroup)
+      connections[ObjectIdentifier(connection)] = connection
+
+      try await connection.connect(configs: configuration)
+      return connection
+    }
+
+    let promise = eventLoopGroup.next().makePromise(of: PostgreSQLConnection.self)
+    waiters.append(promise)
+    if let timeout = timeout {
+      Task {
+        try await Task.sleep(for: timeout)
+        promise.fail(PostgreSQLError.clientTimeout)
+      }
+    }
+    return try await promise.futureResult.get()
+  }
+
+  func release(_ connection: PostgreSQLConnection) async {
+    if await connection.isClosed() {
+      connections.removeValue(forKey: ObjectIdentifier(connection))
+      return
+    }
+
+    if let promise = waiters.popLast() {
+      promise.succeed(connection)
+    } else {
+      availables.append(connection)
+    }
+  }
+}
+
 // MARK: - SCRAM-SHA-256
 
 class ScramSha256Authenticator {
@@ -1669,67 +1729,4 @@ class ScramSha256Authenticator {
 
 public struct ScramSha256AuthenticatorError: Error {
   let message: String
-}
-
-// MARK: - Pool
-
-public final actor PostgreSQLConnectionPool {
-  private let eventLoopGroup: EventLoopGroup
-  private let configuration: PostgreSQLConnectionConfigs
-  private let maxConnections: Int
-
-  private var connections: [ObjectIdentifier: PostgreSQLConnection] = [:]
-  private var availables: [PostgreSQLConnection] = []
-  private var waiters: [EventLoopPromise<PostgreSQLConnection>] = []
-
-  init(
-    eventLoopGroup: EventLoopGroup,
-    configuration: PostgreSQLConnectionConfigs,
-    maxConnections: Int
-  ) {
-    self.eventLoopGroup = eventLoopGroup
-    self.configuration = configuration
-    self.maxConnections = maxConnections
-  }
-
-  func acquire(timeout: Duration? = nil) async throws -> PostgreSQLConnection {
-    while let connection = availables.popLast() {
-      if await connection.isClosed() {
-        connections.removeValue(forKey: ObjectIdentifier(connection))
-        continue
-      }
-      return connection
-    }
-
-    if connections.count < maxConnections {
-      let connection = PostgreSQLConnection(eventLoopGroup: eventLoopGroup)
-      connections[ObjectIdentifier(connection)] = connection
-
-      try await connection.connect(configs: configuration)
-      return connection
-    }
-
-    let promise = eventLoopGroup.next().makePromise(of: PostgreSQLConnection.self)
-    waiters.append(promise)
-    if let timeout = timeout {
-      Task {
-        try await Task.sleep(for: timeout)
-        promise.fail(PostgreSQLError.clientTimeout)
-      }
-    }
-    return try await promise.futureResult.get()
-  }
-
-  func release(_ connection: PostgreSQLConnection) async {
-    if await connection.isClosed() {
-      connections.removeValue(forKey: ObjectIdentifier(connection))
-      return
-    }
-
-    if let promise = waiters.popLast() {
-      promise.succeed(connection)
-    } else {
-      availables.append(connection)
-    }
-  }
 }
