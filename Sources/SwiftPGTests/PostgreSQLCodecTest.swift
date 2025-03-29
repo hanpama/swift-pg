@@ -28,9 +28,11 @@ final class PostgreSQLCodecTest {
         [true, false, nil] as [Bool?],
       ]
     )
-    for try await (got1, got2, got3, got4, got5) in rows.decode(
-      (Bool, Bool, Bool, Bool, Bool).self)
-    {
+
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool, Bool, Bool)
+      let (got1, got2, got3, got4, got5): Row = try row.decode()
+
       #expect(got1)
       #expect(got2)
       #expect(got3)
@@ -53,9 +55,10 @@ final class PostgreSQLCodecTest {
       """
     )
 
-    for try await (got1, got2, got3, got4, got5) in rows.decode(
-      (Bool, Bool, Bool?, [Bool], [Bool?]).self)
-    {
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool?, [Bool], [Bool?])
+      let (got1, got2, got3, got4, got5): Row = try row.decode()
+
       #expect(got1 == true)
       #expect(got2 == false)
       #expect(got3 == nil)
@@ -85,9 +88,10 @@ final class PostgreSQLCodecTest {
       ]
     )
 
-    for try await (got1, got2, got3, got4) in rows.decode(
-      (Bool, Bool, Bool, Bool).self)
-    {
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool, Bool)
+      let (got1, got2, got3, got4): Row = try row.decode()
+
       #expect(got1)
       #expect(got2)
       #expect(got3)
@@ -108,9 +112,10 @@ final class PostgreSQLCodecTest {
       """
     )
 
-    for try await (got1, got2, got3, got4) in rows.decode(
-      (Int16, Int16?, [Int16], [Int16?]).self)
-    {
+    for try await row in rows {
+      typealias Row = (Int16, Int16?, [Int16], [Int16?])
+      let (got1, got2, got3, got4): Row = try row.decode()
+
       #expect(got1 == 42)
       #expect(got2 == nil)
       #expect(got3 == [42, 43])
@@ -139,9 +144,10 @@ final class PostgreSQLCodecTest {
       ]
     )
 
-    for try await (got1, got2, got3, got4) in rows.decode(
-      (Bool, Bool, Bool, Bool).self)
-    {
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool, Bool)
+      let (got1, got2, got3, got4): Row = try row.decode()
+
       #expect(got1)
       #expect(got2)
       #expect(got3)
@@ -162,9 +168,9 @@ final class PostgreSQLCodecTest {
       """
     )
 
-    for try await (got1, got2, got3, got4) in rows.map({
-      try $0.decode((Int32, Int32?, [Int32], [Int32?]).self)
-    }) {
+    for try await row in rows {
+      typealias Row = (Int32, Int32?, [Int32], [Int32?])
+      let (got1, got2, got3, got4): Row = try row.decode()
       #expect(got1 == 42)
       #expect(got2 == nil)
       #expect(got3 == [42, 43])
@@ -193,9 +199,10 @@ final class PostgreSQLCodecTest {
       ]
     )
 
-    for try await (got1, got2, got3, got4) in rows.decode(
-      (Bool, Bool, Bool, Bool).self)
-    {
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool, Bool)
+      let (got1, got2, got3, got4): Row = try row.decode()
+
       #expect(got1)
       #expect(got2)
       #expect(got3)
@@ -216,9 +223,10 @@ final class PostgreSQLCodecTest {
       """
     )
 
-    for try await (got1, got2, got3, got4) in rows.decode(
-      (Int64, Int64?, [Int64], [Int64?]).self)
-    {
+    for try await row in rows {
+      typealias Row = (Int64, Int64?, [Int64], [Int64?])
+      let (got1, got2, got3, got4): Row = try row.decode()
+
       #expect(got1 == 42)
       #expect(got2 == nil)
       #expect(got3 == [42, 43])
@@ -247,9 +255,10 @@ final class PostgreSQLCodecTest {
       ]
     )
 
-    for try await (got1, got2, got3, got4) in rows.decode(
-      (Bool, Bool, Bool, Bool).self)
-    {
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool, Bool)
+      let (got1, got2, got3, got4): Row = try row.decode()
+
       #expect(got1)
       #expect(got2)
       #expect(got3)
@@ -270,9 +279,10 @@ final class PostgreSQLCodecTest {
       """
     )
 
-    for try await (got1, got2, got3, got4) in rows.decode(
-      (Int, Int?, [Int], [Int?]).self)
-    {
+    for try await row in rows {
+      typealias Row = (Int, Int?, [Int], [Int?])
+      let (got1, got2, got3, got4): Row = try row.decode()
+
       #expect(got1 == 42)
       #expect(got2 == nil)
       #expect(got3 == [42, 43])
@@ -299,9 +309,10 @@ final class PostgreSQLCodecTest {
       ]
     )
 
-    for try await (got1, got2, got3, got4) in rows.decode(
-      (Bool, Bool, Bool, Bool).self)
-    {
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool, Bool)
+      let (got1, got2, got3, got4): Row = try row.decode()
+
       #expect(got1)
       #expect(got2)
       #expect(got3)
@@ -322,15 +333,395 @@ final class PostgreSQLCodecTest {
       """
     )
 
-    for try await (got1, got2, got3, got4) in rows.decode(
-      (Int, Int?, [Int], [Int?]).self)
-    {
+    for try await row in rows {
+      typealias Row = (Int, Int?, [Int], [Int?])
+      let (got1, got2, got3, got4): Row = try row.decode()
+
       #expect(got1 == 42)
       #expect(got2 == nil)
       #expect(got3 == [42, 43])
       #expect(got4 == [42, 43, nil])
     }
   }
+
+  // MARK: - String
+
+  @Test func testEncodingStringFromText() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        $1::text = 'Hello, world!',
+        $2::text is null,
+        $3::text[] = ARRAY['Hello', 'World']::text[],
+        $4::text[] = ARRAY['Hello', 'World', null]::text[]
+      """,
+      [
+        "Hello, world!",
+        nil as String?,
+        ["Hello", "World"],
+        ["Hello", "World", nil] as [String?],
+      ]
+    )
+
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool, Bool)
+      let (got1, got2, got3, got4): Row = try row.decode()
+
+      #expect(got1)
+      #expect(got2)
+      #expect(got3)
+      #expect(got4)
+    }
+  }
+
+  @Test func testDecodingStringFromText() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        'Hello, world!'::text,
+        null::text,
+        array['Hello', 'World']::text[],
+        array['Hello', 'World', null]::text[]
+      """
+    )
+
+    for try await row in rows {
+      typealias Row = (String, String?, [String], [String?])
+      let (got1, got2, got3, got4): Row = try row.decode()
+
+      #expect(got1 == "Hello, world!")
+      #expect(got2 == nil)
+      #expect(got3 == ["Hello", "World"])
+      #expect(got4 == ["Hello", "World", nil])
+    }
+  }
+
+  @Test func testEncodingStringFromVarchar() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        $1::varchar = 'Hello, world!',
+        $2::varchar is null,
+        $3::varchar[] = ARRAY['Hello', 'World']::varchar[],
+        $4::varchar[] = ARRAY['Hello', 'World', null]::varchar[]
+      """,
+      [
+        "Hello, world!",
+        nil as String?,
+        ["Hello", "World"],
+        ["Hello", "World", nil] as [String?],
+      ]
+    )
+
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool, Bool)
+      let (got1, got2, got3, got4): Row = try row.decode()
+
+      #expect(got1)
+      #expect(got2)
+      #expect(got3)
+      #expect(got4)
+    }
+  }
+
+  @Test func testDecodingStringFromVarchar() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        'Hello, world!'::varchar,
+        null::varchar,
+        array['Hello', 'World']::varchar[],
+        array['Hello', 'World', null]::varchar[]
+      """
+    )
+
+    for try await row in rows {
+      typealias Row = (String, String?, [String], [String?])
+      let (got1, got2, got3, got4): Row = try row.decode()
+
+      #expect(got1 == "Hello, world!")
+      #expect(got2 == nil)
+      #expect(got3 == ["Hello", "World"])
+      #expect(got4 == ["Hello", "World", nil])
+    }
+  }
+
+  // MARK: - Float
+
+  @Test func testEncodingFloat() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        $1::float4 = 42,
+        $2::float4 is null,
+        $3::float4[] = ARRAY[42, 43]::float4[],
+        $4::float4[] = ARRAY[42, 43, null]::float4[]
+      """,
+      [
+        Float(42),
+        nil as Float?,
+        [Float(42), Float(43)],
+        [Float(42), Float(43), nil] as [Float?],
+      ]
+    )
+
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool, Bool)
+      let (got1, got2, got3, got4): Row = try row.decode()
+
+      #expect(got1)
+      #expect(got2)
+      #expect(got3)
+      #expect(got4)
+    }
+  }
+
+  @Test func testDecodingFloat() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        42::float4,
+        null::float4,
+        array[42, 43]::float4[],
+        array[42, 43, null]::float4[]
+      """
+    )
+
+    for try await row in rows {
+      typealias Row = (Float, Float?, [Float], [Float?])
+      let (got1, got2, got3, got4): Row = try row.decode()
+
+      #expect(got1 == 42)
+      #expect(got2 == nil)
+      #expect(got3 == [42, 43])
+      #expect(got4 == [42, 43, nil])
+    }
+  }
+
+  // MARK: - Double
+
+  @Test func testEncodingDouble() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        $1::float8 = 42,
+        $2::float8 is null,
+        $3::float8[] = ARRAY[42, 43]::float8[],
+        $4::float8[] = ARRAY[42, 43, null]::float8[]
+      """,
+      [
+        Double(42),
+        nil as Double?,
+        [Double(42), Double(43)],
+        [Double(42), Double(43), nil] as [Double?],
+      ]
+    )
+
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool, Bool)
+      let (got1, got2, got3, got4): Row = try row.decode()
+
+      #expect(got1)
+      #expect(got2)
+      #expect(got3)
+      #expect(got4)
+    }
+  }
+
+  @Test func testDecodingDouble() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        42::float8,
+        null::float8,
+        array[42, 43]::float8[],
+        array[42, 43, null]::float8[]
+      """
+    )
+
+    for try await row in rows {
+      typealias Row = (Double, Double?, [Double], [Double?])
+      let (got1, got2, got3, got4): Row = try row.decode()
+
+      #expect(got1 == 42)
+      #expect(got2 == nil)
+      #expect(got3 == [42, 43])
+      #expect(got4 == [42, 43, nil])
+    }
+  }
+
+  // MARK: - Decimal
+
+  @Test func testEncodingDecimal() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        $1::numeric = 42,
+        $2::numeric = 3.141592,
+        $3::numeric = 987654321.123456789,
+        $4::numeric = -1.414213,
+        $5::numeric = -123456789.987654321,
+        $6::numeric = '0.000'::numeric,
+        $7::numeric = 'NaN'::numeric,
+        $8::numeric[] = ARRAY[3.141592, -1.414213]::numeric[],
+        $9::numeric[] = ARRAY[3.141592, -1.414213, null]::numeric[]
+      """,
+      [
+        Decimal(string: "42")!,
+        Decimal(string: "3.141592")!,
+        Decimal(string: "987654321.123456789")!,
+        Decimal(string: "-1.414213")!,
+        Decimal(string: "-123456789.987654321")!,
+        Decimal(string: "0.000")!,
+        Decimal.nan,
+        [
+          Decimal(string: "3.141592")!,
+          Decimal(string: "-1.414213")!,
+        ],
+        [
+          Decimal(string: "3.141592")!,
+          Decimal(string: "-1.414213")!,
+          nil,
+        ] as [Decimal?],
+      ]
+    )
+
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
+      let (got1, got2, got3, got4, got5, got6, got7, got8, got9): Row =
+        try row.decode()
+
+      #expect(got1)
+      #expect(got2)
+      #expect(got3)
+      #expect(got4)
+      #expect(got5)
+      #expect(got6)
+      #expect(got7)
+      #expect(got8)
+      #expect(got9)
+    }
+  }
+
+  @Test func testDecodingDecimal() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        3.141592::numeric,
+        null::numeric,
+        array[3.141592, -1.414213]::numeric[],
+        array[3.141592, -1.414213, null]::numeric[],
+        'NaN'::numeric,
+        '0.000'::numeric
+      """
+    )
+
+    for try await row in rows {
+      typealias Row = (Decimal, Decimal?, [Decimal], [Decimal?], Decimal, Decimal)
+      let (got1, got2, got3, got4, got5, got6): Row = try row.decode()
+
+      #expect(got1 == Decimal(string: "3.141592")!)
+      #expect(got2 == nil)
+      #expect(got3 == [Decimal(string: "3.141592")!, Decimal(string: "-1.414213")!])
+      #expect(got4 == [Decimal(string: "3.141592")!, Decimal(string: "-1.414213")!, nil])
+      #expect(got5 == Decimal.nan)
+      #expect(got6 == Decimal(string: "0.000")!)
+    }
+  }
+
+  // MARK: - Date
+
+  @Test func testEncodingDate() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        $1::timestamp = '1970-01-01 00:00:42',
+        $2::timestamp is null,
+        $3::timestamp[] = ARRAY['1970-01-01 00:00:42', '1970-01-01 00:00:43']::timestamp[],
+        $4::timestamp[] = ARRAY['1970-01-01 00:00:42', '1970-01-01 00:00:43', null]::timestamp[]
+      """,
+      [
+        Date(timeIntervalSince1970: 42),
+        nil as Date?,
+        [
+          Date(timeIntervalSince1970: 42),
+          Date(timeIntervalSince1970: 43),
+        ],
+        [
+          Date(timeIntervalSince1970: 42),
+          Date(timeIntervalSince1970: 43),
+          nil,
+        ] as [Date?],
+      ]
+    )
+
+    for try await row in rows {
+      typealias Row = (Bool, Bool, Bool, Bool)
+      let (got1, got2, got3, got4): Row = try row.decode()
+
+      #expect(got1)
+      #expect(got2)
+      #expect(got3)
+      #expect(got4)
+    }
+  }
+
+  @Test func testDecodingDate() async throws {
+    let connection = try await createConnectionSASL()
+
+    let rows = try await connection.query(
+      """
+      SELECT
+        '1970-01-01 00:00:42'::timestamp,
+        null::timestamp,
+        array['1970-01-01 00:00:42', '1970-01-01 00:00:43']::timestamp[],
+        array['1970-01-01 00:00:42', '1970-01-01 00:00:43', null]::timestamp[]
+      """
+    )
+
+    for try await row in rows {
+      typealias Row = (Date, Date?, [Date], [Date?])
+      let (got1, got2, got3, got4): Row = try row.decode()
+
+      #expect(got1 == Date(timeIntervalSince1970: 42))
+      #expect(got2 == nil)
+      #expect(
+        got3 == [
+          Date(timeIntervalSince1970: 42),
+          Date(timeIntervalSince1970: 43),
+        ])
+      #expect(
+        got4 == [
+          Date(timeIntervalSince1970: 42),
+          Date(timeIntervalSince1970: 43),
+          nil,
+        ])
+    }
+  }
+
+  // UUID
 
   // @Test func testDecodingBool() async throws {
   //   let connection = try await createConnectionSASL()

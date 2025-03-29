@@ -8,7 +8,7 @@ import X509
 
 // MARK: - Types
 
-enum PostgreSQLFrontendMessage {
+enum PostgreSQLFrontendMessage: Sendable {
   case bind(
     portalName: String,
     statementName: String,
@@ -29,7 +29,7 @@ enum PostgreSQLFrontendMessage {
   case terminate
 }
 
-enum PostgreSQLBackendMessage {
+enum PostgreSQLBackendMessage: Sendable {
   case authenticationOk
   case authenticationKerberosV5
   case authenticationCleartextPassword
@@ -68,7 +68,7 @@ enum PostgreSQLBackendMessage {
   case unknownAuthentication  // Placeholder for unknown authentication message types
 }
 
-public enum PostgreSQLMessageField {
+public enum PostgreSQLMessageField: Sendable {
   case severity(String)
   case code(String)
   case message(String)
@@ -88,7 +88,7 @@ public enum PostgreSQLMessageField {
   case routine(String)
 }
 
-struct PostgreSQLFieldDescription {
+struct PostgreSQLFieldDescription: Sendable {
   let name: String
   let tableOID: Int32
   let columnAttr: Int16
@@ -98,12 +98,12 @@ struct PostgreSQLFieldDescription {
   let formatCode: Int16
 }
 
-struct PostgreSQLBoundParameter {
+struct PostgreSQLBoundParameter: Sendable {
   let formatCode: Int16
   let value: [UInt8]
 }
 
-public enum PostgreSQLError: Error {
+public enum PostgreSQLError: Error, Sendable {
   case transportError(String)
   case databaseError(fields: [PostgreSQLMessageField])
   case clientError(String)
@@ -484,24 +484,25 @@ public final actor PostgreSQLConnection {
   private let eventLoopGroup: EventLoopGroup
   private let defaultTimeout: Duration?
   private let protocolClient: PostgreSQLProtocolClient
-  private var state: State = .created
+  private var state: State = .initialized
 
   private enum State {
-    case created
-    case connected
-    case disconnected
+    case initialized
+    case ready
+    case busy
+    case closed
   }
 
-  public init(
-    eventLoopGroup: EventLoopGroup,
-    defaultTimeout: Duration? = nil
-  ) {
+  public init(eventLoopGroup: EventLoopGroup, defaultTimeout: Duration? = nil) {
     self.eventLoopGroup = eventLoopGroup
     self.defaultTimeout = defaultTimeout
     self.protocolClient = PostgreSQLProtocolClient(eventLoopGroup.next())
   }
 
   public func connect(configs: PostgreSQLConnectionConfigs) async throws {
+    guard state == .initialized else {
+      throw PostgreSQLError.clientError("Connection has already been opened")
+    }
     switch configs.socketAddress {
     case .hostPort(let host, let port):
       try await protocolClient.connect(host: host, port: port)
@@ -559,6 +560,7 @@ public final actor PostgreSQLConnection {
         try scramSha256Authenticator.handleServerFinalMessage(finalMessage)
 
       case .readyForQuery:
+        state = .ready
         break loop
       case .errorResponse(let fields):
         throw PostgreSQLError.databaseError(fields: fields)
@@ -569,86 +571,118 @@ public final actor PostgreSQLConnection {
   }
 
   public func close() async throws {
+    guard state != .closed else {
+      return
+    }
     currentTaskGroup?.cancelAll()
     if !(await protocolClient.isClosed()) {
       try await protocolClient.send(.terminate)
       try await protocolClient.close()
     }
+    state = .closed
   }
 
-  public func isClosed() async -> Bool {
-    return await protocolClient.isClosed()
+  public func isClosed() -> Bool {
+    return state == .closed
   }
 
-  public func query(timeout: Duration? = nil, _ sql: String, _ params: [PostgreSQLEncodable] = [])
+  public func query(
+    timeout: Duration? = nil,
+    rowBuffer: Int32 = 0,
+    _ sql: String,
+    _ params: [PostgreSQLEncodable] = []
+  )
     async throws -> PostgreSQLRows
   {
+    guard state == .ready else {
+      throw PostgreSQLError.clientError("Connection is not ready")
+    }
     return try await withTask(timeout: timeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
       try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
       try await self.sync()
-
-      var continuation: PostgreSQLRows.Continuation?
-      let stream = PostgreSQLRows { continuation = $0 }
-      do {
-        while let row = try await self.receiveRow(stmt: stmt) {
-          continuation!.yield(row)
-        }
-        continuation!.finish()
-      } catch {
-        continuation!.finish(throwing: error)
-      }
-      return stream
+      return PostgreSQLRows(connection: self, stmt: stmt, rowLimit: 0)
     }
   }
 
   public func execute(timeout: Duration? = nil, _ sql: String, _ params: [PostgreSQLEncodable] = [])
     async throws
   {
+    guard state == .ready else {
+      throw PostgreSQLError.clientError("Connection is not ready")
+    }
     try await withTask(timeout: timeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
-      try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 1)
+      try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
       try await self.sync()
       try await self.drainUntilReadyForQuery()
     }
   }
 
   public func batchQuery(
-    timeout: Duration? = nil, _ sql: String, _ batches: any Sequence<[PostgreSQLEncodable]>
+    timeout: Duration? = nil, _ sql: String, _ batches: [[PostgreSQLEncodable]]
   )
     async throws -> PostgreSQLRows
   {
+    guard state == .ready else {
+      throw PostgreSQLError.clientError("Connection is not ready")
+    }
     return try await withTask(timeout: timeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
       for params in batches {
         try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
       }
       try await self.sync()
-
-      var continuation: PostgreSQLRows.Continuation?
-      let stream = PostgreSQLRows { continuation = $0 }
-      do {
-        while let row = try await self.receiveRow(stmt: stmt) {
-          continuation!.yield(row)
-        }
-        continuation!.finish()
-      } catch {
-        continuation!.finish(throwing: error)
-      }
-      return stream
+      return PostgreSQLRows(connection: self, stmt: stmt, rowLimit: 0)
     }
   }
 
   public func batchExecute(
-    timeout: Duration? = nil, _ sql: String, _ batches: any Sequence<[PostgreSQLEncodable]>
+    timeout: Duration? = nil, _ sql: String, _ batches: [[PostgreSQLEncodable]]
   ) async throws {
+    guard state == .ready else {
+      throw PostgreSQLError.clientError("Connection is not ready")
+    }
     try await withTask(timeout: timeout) {
       let stmt = try await self.parseStmt(name: "", sql: sql)
       for params in batches {
-        try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 1)
+        try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
       }
       try await self.sync()
       try await self.drainUntilReadyForQuery()
+    }
+  }
+
+  func receiveRowData(rowLimit: Int32) async throws -> ByteBuffer? {
+    loop: while true {
+      switch try await receive() {
+      case .dataRow(_, let columnData):
+        return columnData
+      // return .init(fields: stmt.fields, columns: columnData)
+      case .portalSuspended:
+        try await protocolClient.send(.execute("", rowLimit))
+      case .readyForQuery:
+        state = .ready
+        return nil
+      case .errorResponse(let fields):
+        throw PostgreSQLError.databaseError(fields: fields)
+      default:
+        break
+      }
+    }
+  }
+
+  func drainUntilReadyForQuery() async throws {
+    loop: while true {
+      switch try await receive() {
+      case .readyForQuery:
+        state = .ready
+        break loop
+      case .errorResponse(let fields):
+        throw PostgreSQLError.databaseError(fields: fields)
+      default:
+        break
+      }
     }
   }
 
@@ -700,36 +734,6 @@ public final actor PostgreSQLConnection {
     try await protocolClient.send(.sync)
   }
 
-  private func receiveRow(stmt: PostgreSQLStatement) async throws -> PostgreSQLRow? {
-    loop: while true {
-      switch try await receive() {
-      case .dataRow(_, let columnData):
-        return .init(fields: stmt.fields, columns: columnData)
-      // case .portalSuspended:
-        // try await protocolClient.send(.execute("", 0))
-      case .readyForQuery:
-        return nil
-      case .errorResponse(let fields):
-        throw PostgreSQLError.databaseError(fields: fields)
-      default:
-        break
-      }
-    }
-  }
-
-  private func drainUntilReadyForQuery() async throws {
-    loop: while true {
-      switch try await receive() {
-      case .readyForQuery:
-        break loop
-      case .errorResponse(let fields):
-        throw PostgreSQLError.databaseError(fields: fields)
-      default:
-        break
-      }
-    }
-  }
-
   private func receive() async throws -> PostgreSQLBackendMessage {
     switch try await protocolClient.receive() {
     case .some(let message):
@@ -739,13 +743,15 @@ public final actor PostgreSQLConnection {
     }
   }
 
-  var currentTaskGroup: ThrowingTaskGroup<Any?, Error>?
+  var currentTaskGroup: ThrowingTaskGroup<Sendable?, Error>?
 
-  private func withTask<T>(timeout: Duration?, _ body: @escaping () async throws -> T)
+  private func withTask<T: Sendable>(
+    timeout: Duration?, _ body: @Sendable @escaping () async throws -> T
+  )
     async throws
     -> T
   {
-    return try await withThrowingTaskGroup(of: Any?.self) { taskGroup in
+    return try await withThrowingTaskGroup(of: Sendable?.self) { taskGroup in
       if currentTaskGroup != nil {
         throw PostgreSQLError.clientError("Connection is busy")
       } else {
@@ -769,7 +775,7 @@ public final actor PostgreSQLConnection {
   }
 }
 
-public class PostgreSQLStatement {
+public final class PostgreSQLStatement: Sendable {
   let name: String
   let fields: [PostgreSQLFieldDescription]
   let parameterOids: [Int32]
@@ -786,21 +792,40 @@ public struct PostgreSQLParameters {
   let values: [PostgreSQLEncodable]
 }
 
-public typealias PostgreSQLRows = AsyncThrowingStream<PostgreSQLRow, Error>
+public struct PostgreSQLRows: Sendable, AsyncSequence, AsyncIteratorProtocol {
+  public typealias Element = PostgreSQLRow
+  public typealias AsyncIterator = Self
 
-extension PostgreSQLRows {
-  // public func decode<each V>(_ type: (repeat each V).Type) -> AsyncThrowingMapSequence<
-  //   Self, (repeat each V)
-  // > {
-  //   return self.map { try $0.decode((repeat each V).self) }
-  // }
+  public func next() async throws -> PostgreSQLRow? {
+    if let data = try await connection.receiveRowData(rowLimit: rowLimit) {
+      return .init(fields: stmt.fields, columns: data)
+    } else {
+      return nil
+    }
+  }
+
+  public func close() async throws {
+    try await connection.drainUntilReadyForQuery()
+  }
+
+  public func makeAsyncIterator() -> AsyncIterator {
+    return self
+  }
+
+  let connection: PostgreSQLConnection
+  let stmt: PostgreSQLStatement
+  let rowLimit: Int32
 }
 
-public struct PostgreSQLRow {
+public struct PostgreSQLRow: Sendable {
   let fields: [PostgreSQLFieldDescription]
   let columns: ByteBuffer
 
-  public func decode<each V>(_ types: (repeat each V).Type?) throws -> (repeat each V) {
+  public func decode<each V>(_ types: (repeat each V).Type) throws -> (repeat each V) {
+    return try decode<each V>()
+  }
+
+  public func decode<each V>() throws -> (repeat each V) {
     var buffer = columns
     var fieldsIterator: IndexingIterator<[PostgreSQLFieldDescription]> = fields.makeIterator()
     return (repeat try get((each V).self, fieldsIterator.next()!.dataTypeOID, &buffer))
@@ -843,7 +868,7 @@ public struct PostgreSQLRow {
   }
 }
 
-public struct PostgreSQLConnectionConfigs {
+public struct PostgreSQLConnectionConfigs: Sendable {
 
   let socketAddress: SocketAddress
   let username: String
@@ -859,11 +884,11 @@ public struct PostgreSQLConnectionConfigs {
 
 // MARK: - Codec
 
-public protocol PostgreSQLEncodable {
+public protocol PostgreSQLEncodable: Sendable {
   func encode(typeOid: Int32, buffer: inout ByteBuffer) throws
 }
 
-public protocol PostgreSQLDecodable {
+public protocol PostgreSQLDecodable: Sendable {
   init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws
 }
 
@@ -1055,7 +1080,7 @@ extension String: PostgreSQLCodable, PostgreSQLCodableArrayElement {
   public func encode(typeOid: Int32, buffer: inout ByteBuffer) throws {
     if typeOid == 25 || typeOid == 1043 {
       buffer.writeInteger(Int32(utf8.count), as: Int32.self)
-      buffer.writeBytes(Array(utf8))
+      buffer.writeBytes(utf8)
     } else {
       throw PostgreSQLError.codecError("Cannot encode String as \(typeOid)")
     }
@@ -1091,7 +1116,7 @@ extension Float: PostgreSQLCodable, PostgreSQLCodableArrayElement {
   public func encode(typeOid: Int32, buffer: inout ByteBuffer) throws {
     if typeOid == 700 {
       buffer.writeInteger(Self.pgDataLength, as: Int32.self)
-      buffer.writeInteger(self.bitPattern.bigEndian, as: UInt32.self)
+      buffer.writeInteger(self.bitPattern, as: UInt32.self)
     } else {
       throw PostgreSQLError.codecError("Cannot encode Float as \(typeOid)")
     }
@@ -1105,25 +1130,9 @@ extension Float: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       guard let bitPattern = buffer.readInteger(as: UInt32.self) else {
         throw PostgreSQLError.codecError("Invalid data for Float")
       }
-      self = Float(bitPattern: bitPattern.bigEndian)
+      self = Float(bitPattern: bitPattern)
     } else {
       throw PostgreSQLError.codecError("Cannot decode Float from \(pgTypeOid)")
-    }
-  }
-
-  public func encodeElem(pgArrayTypeOid: Int32, buffer: inout ByteBuffer) throws {
-    if pgArrayTypeOid == 1021 {
-      try self.encode(typeOid: 700, buffer: &buffer)
-    } else {
-      throw PostgreSQLError.codecError("Cannot encode Float as \(pgArrayTypeOid)")
-    }
-  }
-
-  public init(pgArrayTypeOid: Int32, buffer: inout ByteBuffer) throws {
-    if pgArrayTypeOid == 1021 {
-      self = try .init(pgTypeOid: 700, buffer: &buffer)
-    } else {
-      throw PostgreSQLError.codecError("Cannot decode Float from \(pgArrayTypeOid)")
     }
   }
 
@@ -1141,7 +1150,7 @@ extension Double: PostgreSQLCodable, PostgreSQLCodableArrayElement {
   public func encode(typeOid: Int32, buffer: inout ByteBuffer) throws {
     if typeOid == 701 {
       buffer.writeInteger(Self.pgDataLength, as: Int32.self)
-      buffer.writeInteger(self.bitPattern.bigEndian, as: UInt64.self)
+      buffer.writeInteger(self.bitPattern, as: UInt64.self)
     } else {
       throw PostgreSQLError.codecError("Cannot encode Double as \(typeOid)")
     }
@@ -1155,25 +1164,9 @@ extension Double: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       guard let bitPattern = buffer.readInteger(as: UInt64.self) else {
         throw PostgreSQLError.codecError("Invalid data for Double")
       }
-      self = Double(bitPattern: bitPattern.bigEndian)
+      self = Double(bitPattern: bitPattern)
     } else {
       throw PostgreSQLError.codecError("Cannot decode Double from \(pgTypeOid)")
-    }
-  }
-
-  public func encodeElem(pgArrayTypeOid: Int32, buffer: inout ByteBuffer) throws {
-    if pgArrayTypeOid == 1022 {
-      try self.encode(typeOid: 701, buffer: &buffer)
-    } else {
-      throw PostgreSQLError.codecError("Cannot encode Double as \(pgArrayTypeOid)")
-    }
-  }
-
-  public init(pgArrayTypeOid: Int32, buffer: inout ByteBuffer) throws {
-    if pgArrayTypeOid == 1022 {
-      self = try .init(pgTypeOid: 701, buffer: &buffer)
-    } else {
-      throw PostgreSQLError.codecError("Cannot decode Double from \(pgArrayTypeOid)")
     }
   }
 
@@ -1188,26 +1181,98 @@ extension Double: PostgreSQLCodable, PostgreSQLCodableArrayElement {
 extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
   public func encode(typeOid: Int32, buffer: inout ByteBuffer) throws {
     if typeOid == 1700 {
-      let string = "\(self)"
-      buffer.writeInteger(Int32(string.utf8.count + 1), as: Int32.self)
-      buffer.writeNullTerminatedString(string)
+      let ndigits: Int16
+      let weight: Int16
+      let sign: Int16
+      var dscale: Int16
+      var digits: [UInt16] = []
+
+      if self.isNaN {
+        (ndigits, weight, sign, dscale) = (0, 0, -16384, 0)
+      } else if self.isZero {
+        (ndigits, weight, sign, dscale) = (0, 0, 0, 0)
+      } else {
+        let parts = String(describing: self).split(separator: ".")
+        let signedIntegerPart = parts[0]
+        let exp =
+          signedIntegerPart.hasPrefix("-") ? signedIntegerPart.dropFirst() : signedIntegerPart
+        let frac = parts.count > 1 ? parts[1] : ""
+
+        let expDigits = stride(from: 0, to: exp.count, by: 4).map { i in
+          let end = exp.index(exp.endIndex, offsetBy: -i)
+          let start = exp.index(end, offsetBy: -4, limitedBy: exp.startIndex) ?? exp.startIndex
+          return String(exp[start..<end])
+        }.reversed()
+        let fracDigits = stride(from: 0, to: frac.count, by: 4).map { i in
+          let start = frac.index(frac.startIndex, offsetBy: i)
+          let end = frac.index(start, offsetBy: 4, limitedBy: frac.endIndex) ?? frac.endIndex
+          let digit = String(frac[start..<end])
+          return digit.padding(toLength: 4, withPad: "0", startingAt: 0)
+        }
+
+        digits = (expDigits + fracDigits).map { UInt16($0)! }
+        ndigits = Int16(digits.count)
+        weight = Int16(expDigits.count - 1)
+        sign = self.isSignMinus ? 16384 : 0
+        dscale = Int16(frac.count)
+      }
+
+      buffer.writeInteger(Int32(ndigits) * 2 + 8, as: Int32.self)
+      buffer.writeInteger(ndigits, as: Int16.self)
+      buffer.writeInteger(weight, as: Int16.self)
+      buffer.writeInteger(sign, as: Int16.self)
+      buffer.writeInteger(dscale, as: Int16.self)
+      for digit in digits {
+        buffer.writeInteger(digit, as: UInt16.self)
+      }
+
     } else {
       throw PostgreSQLError.codecError("Cannot encode Decimal as \(typeOid)")
     }
   }
 
+  // else if self.isInfinite && self.isSignMinus {
+  //         //  0xD000
+  //         (ndigits, weight, sign, dscale) = (0, 0, 16384, 0)
+  //       } else if self.isInfinite {
+  //         //  0xC000
+  //         (ndigits, weight, sign, dscale) = (0, 0, 0, 0)
+  //       }
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     if pgTypeOid == 1700 {
-      guard let length = buffer.readInteger(as: Int32.self) else {
+      guard buffer.readInteger(as: Int32.self) != nil else {
         throw PostgreSQLError.codecError("Invalid data for Decimal")
       }
-      guard let string = buffer.readString(length: Int(length)) else {
+      guard let ndigits = buffer.readInteger(as: Int16.self),
+        let weight = buffer.readInteger(as: Int16.self),
+        let sign = buffer.readInteger(as: Int16.self),
+        buffer.readInteger(as: Int16.self) != nil  // dscale
+      else {
         throw PostgreSQLError.codecError("Invalid data for Decimal")
       }
-      guard let decimal = Decimal(string: string) else {
-        throw PostgreSQLError.codecError("Invalid Decimal string: \(string)")
+      var digits = [UInt16]()
+      for _ in 0..<ndigits {
+        guard let digit = buffer.readInteger(as: UInt16.self) else {
+          throw PostgreSQLError.codecError("Invalid data for Decimal")
+        }
+        digits.append(digit)
       }
-      self = decimal
+      // Infinity unsupported
+      if sign == -16384 {
+        self = Decimal.nan
+        return
+      } else if ndigits == 0 {
+        self = Decimal.zero
+        return
+      } else {
+        let unsignedString = digits.enumerated().map {
+          String(format: "%04d", $1) + ($0 == weight ? "." : "")
+        }.joined()
+        guard let unsigned = Decimal(string: unsignedString) else {
+          throw PostgreSQLError.codecError("Invalid data for Decimal")
+        }
+        self = sign == 16384 ? -unsigned : unsigned
+      }
     } else {
       throw PostgreSQLError.codecError("Cannot decode Decimal from \(pgTypeOid)")
     }
