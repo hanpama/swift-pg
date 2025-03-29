@@ -1,10 +1,10 @@
-import CommonCrypto
 import Crypto
 import Foundation
 import Logging
 import NIO
 import NIOSSL
-import X509
+
+// import
 
 // MARK: - Types
 
@@ -179,7 +179,7 @@ final actor PostgreSQLProtocolClient {
   }
 
   func send(_ message: PostgreSQLFrontendMessage) async throws {
-    print("Sending message: \(message)")
+    // print("Sending message: \(message)")
     let buffer: ByteBuffer = encodeMessage(message: message)
     try await getChannel().writeAndFlush(buffer)
   }
@@ -434,11 +434,9 @@ final actor PostgreSQLProtocolClient {
     case 50:  // '2'
       message = .bindComplete
     default:
-      // print("Unknown message type: \(messageType)")
-      // buffer.moveReaderIndex(forwardBy: length)
       message = .unknown
     }
-    print("Received message: \(message)")
+    // print("Received message: \(message)")
     return message
   }
 
@@ -529,7 +527,7 @@ public final actor PostgreSQLConnection {
 
       case .authenticationSasl(let mechanisms):
         if mechanisms.contains("SCRAM-SHA-256") || mechanisms.contains("SCRAM-SHA-256-PLUS") {
-          scramSha256Authenticator = ScramSha256Authenticator(
+          scramSha256Authenticator = try ScramSha256Authenticator(
             username: configs.username, password: configs.password)
 
           try await protocolClient.send(
@@ -1470,26 +1468,28 @@ extension PostgreSQLCodableArrayElement where Self: PostgreSQLDecodable {
 
 class ScramSha256Authenticator {
   let username: String
-  let password: String
+  let passwordData: SymmetricKey
   let clientNonce: String
 
-  var saltedPassword: [UInt8]?
+  var saltedPasswordKey: SymmetricKey?
   var authMessage: String?
   var combinedNonce: String?
 
-  init(username: String, password: String) {
-    var randomBytes = [UInt8](repeating: 0, count: 24)
-    let res = CCRandomGenerateBytes(&randomBytes, randomBytes.count)
+  init(username: String, password: String) throws {
+    let randomBytes: [UInt8] = SymmetricKey(size: .bits256).withUnsafeBytes { Array($0) }
 
-    precondition(res == kCCSuccess, "Failed to generate random bytes")
+    guard let passwordData = password.data(using: .utf8) else {
+      throw ScramSha256AuthenticatorError(message: "Failed to encode password to UTF-8 Data")
+    }
 
     self.username = username
-    self.password = password
+    self.passwordData = SymmetricKey(data: passwordData)
     self.clientNonce = Data(randomBytes).base64EncodedString()
   }
 
   func formatClientFirstMessage() -> String {
-    let clientFirstMessageBare = "n=\(username),r=\(clientNonce)"
+    let saslUsername = escapeSaslString(username)
+    let clientFirstMessageBare = "n=\(saslUsername),r=\(clientNonce)"
     return "n,,\(clientFirstMessageBare)"
   }
 
@@ -1514,14 +1514,19 @@ class ScramSha256Authenticator {
     }
     guard let iterationsStr = serverParams["i"], let iterations = Int(iterationsStr) else {
       throw ScramSha256AuthenticatorError(
-        message: "Iterations (i) missing in server-first-message")
+        message: "Iterations (i) missing in server-first-message or not an integer")
+    }
+    guard iterations > 0 else {
+      throw ScramSha256AuthenticatorError(
+        message: "Iterations (i) must be a positive integer")
     }
     guard combinedNonce.starts(with: clientNonce) else {
       throw ScramSha256AuthenticatorError(
         message: "Server nonce (r) does not start with client nonce")
     }
 
-    let clientFirstMessageBare = "n=\(username),r=\(clientNonce)"
+    let saslUsername = escapeSaslString(username)
+    let clientFirstMessageBare = "n=\(saslUsername),r=\(clientNonce)"
     let clientFinalWithoutProof = "c=biws,r=\(combinedNonce)"
     let authMessage = "\(clientFirstMessageBare),\(serverFirstMessage),\(clientFinalWithoutProof)"
 
@@ -1530,110 +1535,135 @@ class ScramSha256Authenticator {
         message: "Invalid base64 encoding for salt")
     }
 
-    let passwordData = password.data(using: .utf8)!
-    var saltedPassword = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-
-    let result = CCKeyDerivationPBKDF(
-      CCPBKDFAlgorithm(kCCPBKDF2),
-      password, passwordData.count,
-      [UInt8](saltData), saltData.count,
-      CCPBKDFAlgorithm(kCCPRFHmacAlgSHA256),
-      UInt32(iterations),
-      &saltedPassword, saltedPassword.count
+    let derivedKey = pbkdf2SHA256(
+      pass: passwordData,
+      salt: saltData,
+      iterations: iterations,
+      outLen: SHA256.byteCount
     )
-    guard result == kCCSuccess else {
-      throw ScramSha256AuthenticatorError(
-        message: "PBKDF2 computation failed")
-    }
 
-    self.saltedPassword = saltedPassword
+    self.saltedPasswordKey = SymmetricKey(data: derivedKey)
     self.authMessage = authMessage
     self.combinedNonce = combinedNonce
   }
 
   func formatClientFinalMessage() throws -> String {
     guard
-      let saltedPassword = saltedPassword,
+      let saltedPasswordKey = saltedPasswordKey,
       let authMessage = authMessage,
       let combinedNonce = combinedNonce
     else {
       throw ScramSha256AuthenticatorError(
-        message: "Salted password, auth message, or combined nonce missing")
+        message:
+          "Cannot format client final message: state is incomplete (call handleServerFirstMessage first)."
+      )
     }
 
-    // Compute client key
     let clientKeyMessage = "Client Key".data(using: .utf8)!
-    var clientKey = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-    CCHmac(
-      CCHmacAlgorithm(kCCHmacAlgSHA256), saltedPassword, saltedPassword.count,
-      [UInt8](clientKeyMessage), clientKeyMessage.count, &clientKey)
+    let clientKeyMac = HMAC<SHA256>.authenticationCode(
+      for: clientKeyMessage, using: saltedPasswordKey)
 
-    // Compute stored key
-    var storedKey = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-    CC_SHA256(clientKey, CC_LONG(clientKey.count), &storedKey)
+    let clientKeyData = Data(clientKeyMac)
+    let storedKeyDigest = SHA256.hash(data: clientKeyData)
+    let storedKey = SymmetricKey(data: storedKeyDigest)
 
-    // Compute client signature
-    let authMessageData = authMessage.data(using: .utf8)!
-    var clientSignature = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-    CCHmac(
-      CCHmacAlgorithm(kCCHmacAlgSHA256), storedKey, storedKey.count, [UInt8](authMessageData),
-      authMessageData.count, &clientSignature)
-
-    // Compute client proof
-    var clientProof = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-    for i in 0..<clientProof.count {
-      clientProof[i] = clientKey[i] ^ clientSignature[i]
+    guard let authMessageData = authMessage.data(using: .utf8) else {
+      throw ScramSha256AuthenticatorError(message: "Failed to encode authMessage to UTF-8 Data")
     }
-    let clientProofBase64 = Data(clientProof).base64EncodedString()
+    let clientSignatureMac = HMAC<SHA256>.authenticationCode(for: authMessageData, using: storedKey)
+    let clientSignatureData = Data(clientSignatureMac)
 
-    return "c=biws,r=\(combinedNonce),p=\(clientProofBase64)"
+    let clientProofData = xor(clientKeyData, clientSignatureData)
+    let clientProofBase64 = clientProofData.base64EncodedString()
+
+    let clientFinalWithoutProof = "c=biws,r=\(combinedNonce)"
+    return "\(clientFinalWithoutProof),p=\(clientProofBase64)"
   }
 
   func handleServerFinalMessage(_ serverFinalMessage: String) throws {
+    guard
+      let saltedPasswordKey = saltedPasswordKey,
+      let authMessage = authMessage
+    else {
+      throw ScramSha256AuthenticatorError(
+        message: "Cannot handle server final message: state is incomplete.")
+    }
+
     if serverFinalMessage.starts(with: "e=") {
+      let errorMessage = serverFinalMessage.dropFirst(2)
       throw ScramSha256AuthenticatorError(
-        message: "SASL authentication error: \(serverFinalMessage)")
+        message: "SCRAM Authentication failed on server: \(errorMessage)")
     }
 
-    // Extract server signature
-    let parts = serverFinalMessage.split(separator: ",")
-    var serverParams: [String: String] = [:]
-
-    for part in parts {
-      if part.contains("=") {
-        let keyValue = part.split(separator: "=", maxSplits: 1)
-        if keyValue.count == 2 {
-          serverParams[String(keyValue[0])] = String(keyValue[1])
-        }
-      }
-    }
-
-    guard let serverSignatureBase64 = serverParams["v"] else {
+    let parts = serverFinalMessage.split(separator: ",", maxSplits: 1)
+    guard parts.first?.starts(with: "v=") ?? false else {
       throw ScramSha256AuthenticatorError(
-        message: "Server signature (v) missing in server-final-message")
+        message: "Server signature (v=) missing or invalid in server-final-message")
     }
 
-    // Compute server key
+    let serverSignatureBase64 = String(parts[0].dropFirst(2))
+
+    guard let serverSignatureData = Data(base64Encoded: serverSignatureBase64) else {
+      throw ScramSha256AuthenticatorError(
+        message: "Invalid base64 encoding for server signature (v)")
+    }
+
     let serverKeyMessage = "Server Key".data(using: .utf8)!
-    var serverKey = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-    CCHmac(
-      CCHmacAlgorithm(kCCHmacAlgSHA256), saltedPassword!, saltedPassword!.count,
-      [UInt8](serverKeyMessage), serverKeyMessage.count, &serverKey)
+    let serverKeyMac = HMAC<SHA256>.authenticationCode(
+      for: serverKeyMessage, using: saltedPasswordKey)
+    let serverKey = SymmetricKey(data: serverKeyMac)
 
-    // Compute expected server signature
-    let authMessageData = authMessage!.data(using: .utf8)!
-    var expectedServerSignature = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-    CCHmac(
-      CCHmacAlgorithm(kCCHmacAlgSHA256), serverKey, serverKey.count, [UInt8](authMessageData),
-      authMessageData.count, &expectedServerSignature)
-
-    let expectedServerSignatureBase64 = Data(expectedServerSignature).base64EncodedString()
-
-    // Verify signatures match
-    guard serverSignatureBase64 == expectedServerSignatureBase64 else {
-      throw ScramSha256AuthenticatorError(
-        message: "Server signature does not match expected server signature")
+    guard let authMessageData = authMessage.data(using: .utf8) else {
+      throw ScramSha256AuthenticatorError(message: "Failed to encode authMessage to UTF-8 Data")
     }
+    let expectedServerSignatureMac = HMAC<SHA256>.authenticationCode(
+      for: authMessageData, using: serverKey)
+    let expectedServerSignatureData = Data(expectedServerSignatureMac)
+
+    guard serverSignatureData == expectedServerSignatureData else {
+      throw ScramSha256AuthenticatorError(
+        message: "Server signature verification failed. Server proof is incorrect.")
+    }
+  }
+
+  private func escapeSaslString(_ string: String) -> String {
+    return string.replacingOccurrences(of: "=", with: "=3D")
+      .replacingOccurrences(of: ",", with: "=2C")
+  }
+
+  private func xor(_ data1: Data, _ data2: Data) -> Data {
+    guard data1.count == data2.count else {
+      fatalError("Data lengths do not match for XOR operation")
+    }
+    var result = Data(count: data1.count)
+    for i in 0..<data1.count {
+      result[i] = data1[i] ^ data2[i]
+    }
+    return result
+  }
+
+  private func pbkdf2SHA256(pass: SymmetricKey, salt: Data, iterations: Int, outLen: Int) -> Data {
+    let hashLength = 32
+    let blocks = (outLen + hashLength - 1) / hashLength
+    var derivedKey = Data()
+
+    for block in 1...blocks {
+      var saltAndCounter = salt
+      var counter = UInt32(block).bigEndian
+      withUnsafeBytes(of: &counter) { counterBytes in
+        saltAndCounter.append(contentsOf: counterBytes)
+      }
+
+      var U = Data(HMAC<SHA256>.authenticationCode(for: saltAndCounter, using: pass))
+      var T = Data(U)
+
+      for _ in 1..<iterations {
+        U = Data(HMAC<SHA256>.authenticationCode(for: U, using: pass))
+        T = xor(T, U)
+      }
+      derivedKey.append(contentsOf: T)
+    }
+    return derivedKey.prefix(outLen)
   }
 }
 

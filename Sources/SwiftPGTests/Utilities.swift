@@ -9,7 +9,7 @@ func createConnectionTrust() async throws -> PostgreSQLConnection {
 
   try await conn.connect(
     configs: .init(
-      socketAddress: .hostPort(host: "localhost", port: 6450),
+      socketAddress: .hostPort(host: "postgres_insecure", port: 5432),
       username: "postgres",
       password: "postgres",
       database: "postgres",
@@ -25,7 +25,7 @@ func createConnectionSASL() async throws -> PostgreSQLConnection {
 
   try await conn.connect(
     configs: .init(
-      socketAddress: .hostPort(host: "localhost", port: 6451),
+      socketAddress: .hostPort(host: "postgres_secure", port: 5432),
       username: "postgres",
       password: "postgres",
       database: "postgres",
@@ -45,7 +45,7 @@ func createConnectionTLS() async throws -> PostgreSQLConnection {
 
   try await conn.connect(
     configs: .init(
-      socketAddress: .hostPort(host: "localhost", port: 6452),
+      socketAddress: .hostPort(host: "postgres_ssl", port: 5432),
       username: "postgres",
       password: "postgres",
       database: "postgres",
