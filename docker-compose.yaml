@@ -10,7 +10,7 @@ services:
     ports:
       - 6450:5432
     healthcheck:
-      test: ["CMD", "pg_isready"]
+      test: ["CMD", "pg_isready", "-U", "postgres"]
       timeout: 1s
       interval: 5s
 
@@ -24,7 +24,7 @@ services:
     ports:
       - 6451:5432
     healthcheck:
-      test: ["CMD", "pg_isready"]
+      test: ["CMD", "pg_isready", "-U", "postgres"]
       timeout: 1s
       interval: 5s
 
@@ -40,7 +40,7 @@ services:
     ports:
       - 6452:5432
     healthcheck:
-      test: ["CMD", "pg_isready"]
+      test: ["CMD", "pg_isready", "-U", "postgres"]
       timeout: 1s
       interval: 5s
     depends_on:
