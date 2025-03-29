@@ -28,32 +28,32 @@ services:
       timeout: 1s
       interval: 5s
 
-  postgres_ssl:
-    image: postgres:17
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
-    volumes:
-    - ./certs:/certs
-    command: ["postgres", "-c", "log_statement=all", "-c", "log_connections=on", "-c", "log_disconnections=on", "-c", "log_duration=on", "-c", "ssl=on", "-c", "ssl_cert_file=/certs/server.crt", "-c", "ssl_key_file=/certs/server.key"]
-    ports:
-      - 6452:5432
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres"]
-      timeout: 1s
-      interval: 5s
-    depends_on:
-      openssl:
-        condition: service_completed_successfully
+  # postgres_ssl:
+  #   image: postgres:17
+  #   environment:
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_PASSWORD: postgres
+  #     POSTGRES_DB: postgres
+  #   volumes:
+  #   - ./certs:/certs
+  #   command: ["postgres", "-c", "log_statement=all", "-c", "log_connections=on", "-c", "log_disconnections=on", "-c", "log_duration=on", "-c", "ssl=on", "-c", "ssl_cert_file=/certs/server.crt", "-c", "ssl_key_file=/certs/server.key"]
+  #   ports:
+  #     - 6452:5432
+  #   healthcheck:
+  #     test: ["CMD", "pg_isready", "-U", "postgres"]
+  #     timeout: 1s
+  #     interval: 5s
+  #   depends_on:
+  #     openssl:
+  #       condition: service_completed_successfully
 
-  openssl:
-    image: alpine:3.14
-    command: >
-      sh -c "apk add --no-cache openssl &&
-        openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 -subj '/CN=localhost' -keyout /certs/server.key -out /certs/server.crt"
-    volumes:
-      - ./certs:/certs
+  # openssl:
+  #   image: alpine:3.14
+  #   command: >
+  #     sh -c "apk add --no-cache openssl &&
+  #       openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 -subj '/CN=localhost' -keyout /certs/server.key -out /certs/server.crt"
+  #   volumes:
+  #     - ./certs:/certs
 
   test:
     image: swift:6.0.3
