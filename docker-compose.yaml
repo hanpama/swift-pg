@@ -64,6 +64,13 @@ services:
       - .:/app
     working_dir: /app
     command: ["swift", "test"]
+    environment:
+      - PG_INSECURE_HOST=postgres_insecure
+      - PG_INSECURE_PORT=5432
+      - PG_SECURE_HOST=postgres_secure
+      - PG_SECURE_PORT=5432
+      - PG_TLS_HOST=postgres_ssl
+      - PG_TLS_PORT=5432
     depends_on:
       postgres_insecure:
         condition: service_healthy
