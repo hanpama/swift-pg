@@ -66,10 +66,6 @@ func createConnectionSASL() async throws -> PostgreSQLConnection {
 func createConnectionTLS() async throws -> PostgreSQLConnection {
   let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
   let conn = PostgreSQLConnection(eventLoopGroup: loopGroup)
-  var tlsConfig = TLSConfiguration.makeClientConfiguration()
-
-  tlsConfig.applicationProtocols = ["postgresql"]
-  tlsConfig.certificateVerification = .none
 
   try await conn.connect(configs: getTLSConfigs())
 

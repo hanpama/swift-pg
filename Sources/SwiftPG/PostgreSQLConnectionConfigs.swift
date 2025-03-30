@@ -1,3 +1,4 @@
+import Foundation
 import NIOSSL
 
 public struct PostgreSQLConnectionConfigs: Sendable {
@@ -7,7 +8,7 @@ public struct PostgreSQLConnectionConfigs: Sendable {
   let password: String
   let database: String
   let tls: TLSConfiguration?
-  // let sslmode: String?
+  // let sslmode: SSLMode?
   // let sslcert: String?
   // let sslkey: String?
   // let sslrootcert: String?
@@ -16,6 +17,15 @@ public struct PostgreSQLConnectionConfigs: Sendable {
   enum SocketAddress {
     case hostPort(host: String, port: Int)
     case unixDomainSocket(path: String)
+  }
+
+  public enum SSLMode: String {
+    case disable = "disable"
+    case allow = "allow"
+    case prefer = "prefer"
+    case require = "require"
+    case verifyCA = "verify-ca"
+    case verifyFull = "verify-full"
   }
 }
 // sslmode, sslcert, sslkey, sslrootcert, and sslcrl

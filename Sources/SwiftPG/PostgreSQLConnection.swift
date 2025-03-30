@@ -1,6 +1,7 @@
 import Foundation
 import Logging
 import NIO
+import NIOSSL
 
 public final actor PostgreSQLConnection {
   private let eventLoopGroup: EventLoopGroup
@@ -57,6 +58,12 @@ public final actor PostgreSQLConnection {
     case .unixDomainSocket(let path):
       try await protocolClient.connect(unixDomainSocketPath: path)
     }
+
+    // var tlsConfig = TLSConfiguration.makeClientConfiguration()
+
+    // tlsConfig.applicationProtocols = ["postgresql"]
+    // tlsConfig.certificateVerification = .none
+    // configs.sslmode
 
     if let tls = configs.tls {
       if case let .hostPort(host: host, _) = configs.socketAddress {
