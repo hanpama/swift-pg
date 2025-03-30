@@ -17,14 +17,11 @@ final class PostgreSQLQueryTest {
       ])
 
     let values = rows.map {
-      row in 
+      row in
       let value = try row.decode(Int64.self)
-      print("Got value: \(value)")
       return value
     }
     var iterator = values.makeAsyncIterator()
-
-    
 
     #expect(try await iterator.next() == 1)
     #expect(try await iterator.next() == 2)

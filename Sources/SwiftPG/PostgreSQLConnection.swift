@@ -59,15 +59,29 @@ public final actor PostgreSQLConnection {
       try await protocolClient.connect(unixDomainSocketPath: path)
     }
 
-    // var tlsConfig = TLSConfiguration.makeClientConfiguration()
+    if case .require = configs.sslmode,
+      case .verifyCA = configs.sslmode,
+      case .verifyFull = configs.sslmode
+    {
+      var tlsConfig = TLSConfiguration.makeClientConfiguration()
+      tlsConfig.applicationProtocols = ["postgresql"]
 
-    // tlsConfig.applicationProtocols = ["postgresql"]
-    // tlsConfig.certificateVerification = .none
-    // configs.sslmode
-
-    if let tls = configs.tls {
+      switch configs.sslmode {
+      case .require:
+        tlsConfig.certificateVerification = .none
+      case .verifyCA:
+        tlsConfig.certificateVerification = .fullVerification
+      case .verifyFull:
+        guard let sslrootcert = configs.sslrootcert else {
+          throw PostgreSQLError.clientError("sslrootcert is required for verifyFull")
+        }
+        tlsConfig.certificateVerification = .fullVerification
+        tlsConfig.trustRoots = .file(sslrootcert)
+      default:
+        break
+      }
       if case let .hostPort(host: host, _) = configs.socketAddress {
-        try await protocolClient.enableTLS(host: host, tls)
+        try await protocolClient.enableTLS(host: host, tlsConfig)
       } else {
         throw PostgreSQLError.clientError("TLS is not supported for Unix domain sockets")
       }
@@ -339,11 +353,6 @@ public final class PostgreSQLStatement: Sendable {
     self.fields = fields
     self.parameterOids = parameterOids
   }
-}
-
-public struct PostgreSQLParameters {
-  let oids: [Int]
-  let values: [PostgreSQLEncodable]
 }
 
 public struct PostgreSQLRows: Sendable, AsyncSequence, AsyncIteratorProtocol {

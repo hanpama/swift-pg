@@ -13,7 +13,11 @@ func getInsecureConfigs() -> PostgreSQLConnectionConfigs {
     username: "postgres",
     password: "postgres",
     database: "postgres",
-    tls: nil
+    sslmode: nil,
+    sslcert: nil,
+    sslkey: nil,
+    sslrootcert: nil,
+    sslcrl: nil
   )
 }
 
@@ -25,25 +29,54 @@ func getSecureConfigs() -> PostgreSQLConnectionConfigs {
     username: "postgres",
     password: "postgres",
     database: "postgres",
-    tls: nil
+    sslmode: nil,
+    sslcert: nil,
+    sslkey: nil,
+    sslrootcert: nil,
+    sslcrl: nil
   )
 }
 
 func getTLSConfigs() -> PostgreSQLConnectionConfigs {
   let host = ProcessInfo.processInfo.environment["PG_TLS_HOST"] ?? "localhost"
   let port = Int(ProcessInfo.processInfo.environment["PG_TLS_PORT"] ?? "6452") ?? 6452
-  var tlsConfig = TLSConfiguration.makeClientConfiguration()
-  tlsConfig.applicationProtocols = ["postgresql"]
-  tlsConfig.certificateVerification = .none
 
   return .init(
     socketAddress: .hostPort(host: host, port: port),
     username: "postgres",
     password: "postgres",
     database: "postgres",
-    tls: tlsConfig
+    sslmode: .require,
+    sslcert: nil,
+    sslkey: nil,
+    sslrootcert: nil,
+    sslcrl: nil
   )
 }
+
+// New helper function for SSL tests
+func getSSLTestConfigs(
+  sslmode: PostgreSQLConnectionConfigs.SSLMode,
+  sslrootcert: String? = nil,
+  hostOverride: String? = nil
+) -> PostgreSQLConnectionConfigs {
+  let defaultHost = ProcessInfo.processInfo.environment["PG_TLS_HOST"] ?? "localhost"
+  let host = hostOverride ?? defaultHost
+  let port = Int(ProcessInfo.processInfo.environment["PG_TLS_PORT"] ?? "6452") ?? 6452
+
+  return .init(
+    socketAddress: .hostPort(host: host, port: port),
+    username: "postgres",
+    password: "postgres",
+    database: "postgres",
+    sslmode: sslmode,
+    sslcert: nil, // Client cert not needed for these tests
+    sslkey: nil, // Client key not needed for these tests
+    sslrootcert: sslrootcert,
+    sslcrl: nil // CRL not needed for these tests
+  )
+}
+
 
 func createConnectionTrust() async throws -> PostgreSQLConnection {
   let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
