@@ -6,7 +6,7 @@ import Testing
 
 final class PostgreSQLTimeoutTest {
   @Test func testTimeout() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows1 = try await connection.query(
       "SELECT pg_sleep(0.5);"

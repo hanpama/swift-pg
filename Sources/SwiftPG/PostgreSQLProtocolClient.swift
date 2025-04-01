@@ -2,11 +2,10 @@ import NIO
 import NIOSSL
 
 final actor PostgreSQLProtocolClient {
-  private let messages: AsyncStream<PostgreSQLBackendMessage?>
+  private let messages: AsyncThrowingStream<PostgreSQLBackendMessage?, Error>
   private let bootstrap: ClientBootstrap
   private var channel: Channel?
   private var state: State = .created
-  private var cert: NIOSSLCertificate?
 
   enum State {
     case created
@@ -20,8 +19,8 @@ final actor PostgreSQLProtocolClient {
   }
 
   init(_ loop: EventLoop) {
-    var continuation: AsyncStream<PostgreSQLBackendMessage?>.Continuation?
-    let messages = AsyncStream { continuation = $0 }
+    var continuation: AsyncThrowingStream<PostgreSQLBackendMessage?, Error>.Continuation?
+    let messages = AsyncThrowingStream { continuation = $0 }
     let messageHandler = PostgreSQLMessageHandler(continuation: continuation!)
 
     self.messages = messages
@@ -55,10 +54,6 @@ final actor PostgreSQLProtocolClient {
     let sslContext = try NIOSSLContext(configuration: tlsConfiguration)
     let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
     try await channel!.pipeline.addHandler(sslHandler, position: .first).get()
-  }
-
-  func getTLSCertificate() -> NIOSSLCertificate? {
-    return cert
   }
 
   func send(_ message: PostgreSQLFrontendMessage) async throws {
@@ -325,9 +320,9 @@ final actor PostgreSQLProtocolClient {
     typealias InboundIn = ByteBuffer
     typealias OutboundOut = ByteBuffer
 
-    private let continuation: AsyncStream<PostgreSQLBackendMessage?>.Continuation
+    private let continuation: AsyncThrowingStream<PostgreSQLBackendMessage?, Error>.Continuation
 
-    init(continuation: AsyncStream<PostgreSQLBackendMessage?>.Continuation) {
+    init(continuation: AsyncThrowingStream<PostgreSQLBackendMessage?, Error>.Continuation) {
       self.continuation = continuation
     }
 
@@ -350,6 +345,14 @@ final actor PostgreSQLProtocolClient {
         continuation.yield(message)
       }
       continuation.yield(nil)
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+      continuation.finish(throwing: error)
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+      continuation.finish()
     }
   }
 }

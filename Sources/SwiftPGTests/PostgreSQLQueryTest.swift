@@ -6,7 +6,7 @@ import Testing
 
 final class PostgreSQLQueryTest {
   @Test func testConnectionSasl() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.batchQuery(
       "SELECT $1::int8;",

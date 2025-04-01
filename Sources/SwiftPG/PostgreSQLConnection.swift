@@ -7,32 +7,7 @@ public final actor PostgreSQLConnection {
   private let eventLoopGroup: EventLoopGroup
   private let defaultTimeout: Duration?
   private let protocolClient: PostgreSQLProtocolClient
-  let defaultDecoderMap: [Int32: PostgreSQLDecodable.Type] = [
-    16: Bool.self,
-    1000: [Bool].self,
-    21: Int16.self,
-    1005: [Int16].self,
-    23: Int32.self,
-    1007: [Int32].self,
-    20: Int64.self,
-    1016: [Int64].self,
-    25: String.self,
-    1043: String.self,
-    1009: [String].self,
-    1015: [String].self,
-    700: Float.self,
-    1021: [Float].self,
-    701: Double.self,
-    1022: [Double].self,
-    1700: Decimal.self,
-    1231: [Decimal].self,
-    1114: Date.self,
-    1184: Date.self,
-    1115: [Date].self,
-    1185: [Date].self,
-    2950: UUID.self,
-    2951: [UUID].self,
-  ]
+  let defaultDecoderMap: [Int32: PostgreSQLDecodable.Type] = DEFAULT_DECODER_MAP
   private var state: State = .initialized
 
   private enum State {
@@ -59,10 +34,8 @@ public final actor PostgreSQLConnection {
       try await protocolClient.connect(unixDomainSocketPath: path)
     }
 
-    if case .require = configs.sslmode,
-      case .verifyCA = configs.sslmode,
-      case .verifyFull = configs.sslmode
-    {
+    switch configs.sslmode {
+    case .require, .verifyCA, .verifyFull:
       var tlsConfig = TLSConfiguration.makeClientConfiguration()
       tlsConfig.applicationProtocols = ["postgresql"]
 
@@ -70,21 +43,22 @@ public final actor PostgreSQLConnection {
       case .require:
         tlsConfig.certificateVerification = .none
       case .verifyCA:
-        tlsConfig.certificateVerification = .fullVerification
+        tlsConfig.certificateVerification = .noHostnameVerification
       case .verifyFull:
-        guard let sslrootcert = configs.sslrootcert else {
-          throw PostgreSQLError.clientError("sslrootcert is required for verifyFull")
-        }
         tlsConfig.certificateVerification = .fullVerification
-        tlsConfig.trustRoots = .file(sslrootcert)
       default:
-        break
+        fatalError("Unreachable")
       }
-      if case let .hostPort(host: host, _) = configs.socketAddress {
+      if let sslrootcert = configs.sslrootcert {
+        tlsConfig.trustRoots = .file(sslrootcert)
+      }
+      if case .hostPort(let host, _) = configs.socketAddress {
         try await protocolClient.enableTLS(host: host, tlsConfig)
       } else {
         throw PostgreSQLError.clientError("TLS is not supported for Unix domain sockets")
       }
+    default:
+      break
     }
 
     try await protocolClient.send(.startupMessage(configs.username, configs.database))
@@ -424,3 +398,30 @@ public enum PostgreSQLError: Error, Sendable {
   case codecError(String)
   case clientTimeout
 }
+
+let DEFAULT_DECODER_MAP: [Int32: PostgreSQLDecodable.Type] = [
+  16: Bool.self,
+  1000: [Bool].self,
+  21: Int16.self,
+  1005: [Int16].self,
+  23: Int32.self,
+  1007: [Int32].self,
+  20: Int64.self,
+  1016: [Int64].self,
+  25: String.self,
+  1043: String.self,
+  1009: [String].self,
+  1015: [String].self,
+  700: Float.self,
+  1021: [Float].self,
+  701: Double.self,
+  1022: [Double].self,
+  1700: Decimal.self,
+  1231: [Decimal].self,
+  1114: Date.self,
+  1184: Date.self,
+  1115: [Date].self,
+  1185: [Date].self,
+  2950: UUID.self,
+  2951: [UUID].self,
+]

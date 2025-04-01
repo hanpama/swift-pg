@@ -9,7 +9,7 @@ final class PostgreSQLCodecTest {
   // MARK: - Bool
 
   @Test func testEncodingBool() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -42,7 +42,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingBool() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -70,7 +70,7 @@ final class PostgreSQLCodecTest {
   // MARK: - Int16
 
   @Test func testEncodingInt16() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -100,7 +100,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingInt16() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -126,7 +126,7 @@ final class PostgreSQLCodecTest {
   // MARK: - Int32
 
   @Test func testEncodingInt32() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -156,7 +156,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingInt32() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -181,7 +181,7 @@ final class PostgreSQLCodecTest {
   // MARK: - Int64
 
   @Test func testEncodingInt64() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -211,7 +211,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingInt64() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -237,7 +237,7 @@ final class PostgreSQLCodecTest {
   // MARK: - Int
 
   @Test func testEncodingIntFromInt4() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -267,7 +267,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingIntToInt4() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -291,7 +291,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testEncodingIntFromInt8() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -321,7 +321,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingIntToInt8() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -347,7 +347,7 @@ final class PostgreSQLCodecTest {
   // MARK: - String
 
   @Test func testEncodingStringFromText() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -377,7 +377,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingStringFromText() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -401,7 +401,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testEncodingStringFromVarchar() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -431,7 +431,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingStringFromVarchar() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -457,7 +457,7 @@ final class PostgreSQLCodecTest {
   // MARK: - Float
 
   @Test func testEncodingFloat() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -487,7 +487,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingFloat() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -513,7 +513,7 @@ final class PostgreSQLCodecTest {
   // MARK: - Double
 
   @Test func testEncodingDouble() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -543,7 +543,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingDouble() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -569,7 +569,7 @@ final class PostgreSQLCodecTest {
   // MARK: - Decimal
 
   @Test func testEncodingDecimal() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -622,7 +622,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingDecimal() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -669,7 +669,7 @@ final class PostgreSQLCodecTest {
   // MARK: - Date
 
   @Test func testEncodingDate() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -706,7 +706,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingDate() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -741,7 +741,7 @@ final class PostgreSQLCodecTest {
   // MARK: - UUID
 
   @Test func testEncodingUUID() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -778,7 +778,7 @@ final class PostgreSQLCodecTest {
   }
 
   @Test func testDecodingUUID() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
@@ -813,7 +813,7 @@ final class PostgreSQLCodecTest {
   // MARK: - Any
 
   @Test func testEncodeAny() async throws {
-    let connection = try await createConnectionSASL()
+    let connection = try await createTestConnection()
 
     let rows = try await connection.query(
       """
