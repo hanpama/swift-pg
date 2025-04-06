@@ -24,43 +24,7 @@ public final actor PostgreSQLConnection {
   }
 
   public func connect(configs: PostgreSQLConnectionConfigs) async throws {
-    guard state == .initialized else {
-      throw PostgreSQLError.clientError("Connection has already been opened")
-    }
-    switch configs.socketAddress {
-    case .hostPort(let host, let port):
-      try await protocolClient.connect(host: host, port: port)
-    case .unixDomainSocket(let path):
-      try await protocolClient.connect(unixDomainSocketPath: path)
-    }
-
-    switch configs.sslmode {
-    case .require, .verifyCA, .verifyFull:
-      var tlsConfig = TLSConfiguration.makeClientConfiguration()
-      tlsConfig.applicationProtocols = ["postgresql"]
-
-      switch configs.sslmode {
-      case .require:
-        tlsConfig.certificateVerification = .none
-      case .verifyCA:
-        tlsConfig.certificateVerification = .noHostnameVerification
-      case .verifyFull:
-        tlsConfig.certificateVerification = .fullVerification
-      default:
-        fatalError("Unreachable")
-      }
-      if let sslrootcert = configs.sslrootcert {
-        tlsConfig.trustRoots = .file(sslrootcert)
-      }
-      if case .hostPort(let host, _) = configs.socketAddress {
-        try await protocolClient.enableTLS(host: host, tlsConfig)
-      } else {
-        throw PostgreSQLError.clientError("TLS is not supported for Unix domain sockets")
-      }
-    default:
-      break
-    }
-
+    try await protocolClient.connect(configs: configs)
     try await protocolClient.send(.startupMessage(configs.username, configs.database))
 
     var scramSha256Authenticator: ScramSha256Authenticator?

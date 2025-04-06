@@ -2,8 +2,11 @@ import NIO
 import NIOSSL
 
 final actor PostgreSQLProtocolClient {
-  private let messages: AsyncThrowingStream<PostgreSQLBackendMessage?, Error>
-  private let bootstrap: ClientBootstrap
+  typealias MessageStream = AsyncThrowingStream<PostgreSQLBackendMessage?, Error>
+
+  private let loop: EventLoop
+  private let messages: MessageStream
+  private let continuation: MessageStream.Continuation
   private var channel: Channel?
   private var state: State = .created
 
@@ -13,47 +16,73 @@ final actor PostgreSQLProtocolClient {
     case disconnected
   }
 
-  enum ConnectOptions {
-    case hostPort(_ host: String, _ port: Int)
-    case unixDomainSocket(path: String)
-  }
-
   init(_ loop: EventLoop) {
     var continuation: AsyncThrowingStream<PostgreSQLBackendMessage?, Error>.Continuation?
     let messages = AsyncThrowingStream { continuation = $0 }
-    let messageHandler = PostgreSQLMessageHandler(continuation: continuation!)
-
+    self.loop = loop
     self.messages = messages
-    self.bootstrap = ClientBootstrap(group: loop)
+    self.continuation = continuation!
+  }
+
+  func connect(configs: PostgreSQLConnectionConfigs) async throws {
+    guard state == .created else {
+      throw PostgreSQLError.clientError("ProtocolClient is already open")
+    }
+
+    let bootstrap = ClientBootstrap(group: loop)
       .channelOption(.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
       .channelOption(.autoRead, value: false)
-      .channelInitializer { channel in
+
+    let messageHandler = PostgreSQLMessageHandler(continuation: self.continuation)
+
+    switch configs.sslmode {
+    case .require, .verifyCA, .verifyFull:
+      var tlsConfig = TLSConfiguration.makeClientConfiguration()
+      tlsConfig.applicationProtocols = ["postgresql"]
+
+      if case .require = configs.sslmode {
+        tlsConfig.certificateVerification = .none
+      } else if case .verifyCA = configs.sslmode {
+        tlsConfig.certificateVerification = .noHostnameVerification
+      } else if case .verifyFull = configs.sslmode {
+        tlsConfig.certificateVerification = .fullVerification
+      }
+
+      if let sslcert = configs.sslcert {
+        let certs = try NIOSSLCertificate.fromPEMFile(sslcert)
+        tlsConfig.certificateChain = certs.map { .certificate($0) }
+      }
+      if let sslkey = configs.sslkey {
+        let privateKey = try NIOSSLPrivateKey(file: sslkey, format: .pem)
+        tlsConfig.privateKey = .privateKey(privateKey)
+      }
+      if let sslrootcert = configs.sslrootcert {
+        tlsConfig.additionalTrustRoots = [.file(sslrootcert)]
+      }
+      guard case let .hostPort(host, _) = configs.socketAddress else {
+        throw PostgreSQLError.clientError("Host is required for TLS connections")
+      }
+      let sslContext = try NIOSSLContext(configuration: tlsConfig)
+      let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
+
+      bootstrap.channelInitializer { channel in
+        channel.pipeline.addHandlers(sslHandler, messageHandler)
+      }
+    default:
+      bootstrap.channelInitializer { channel in
         channel.pipeline.addHandler(messageHandler)
       }
-  }
-
-  func connect(host: String, port: Int) async throws {
-    guard state == .created else {
-      throw PostgreSQLError.clientError("ProtocolClient is already open")
     }
-    state = .connected
-    self.channel = try await bootstrap.connect(host: host, port: port).get()
-    channel!.read()
-  }
 
-  func connect(unixDomainSocketPath: String) async throws {
-    guard state == .created else {
-      throw PostgreSQLError.clientError("ProtocolClient is already open")
+    switch configs.socketAddress {
+    case .hostPort(let host, let port):
+      channel = try await bootstrap.connect(host: host, port: port).get()
+    case .unixDomainSocket(let path):
+      channel = try await bootstrap.connect(unixDomainSocketPath: path).get()
     }
-    state = .connected
-    self.channel = try await bootstrap.connect(unixDomainSocketPath: unixDomainSocketPath).get()
-    channel!.read()
-  }
 
-  func enableTLS(host: String, _ tlsConfiguration: TLSConfiguration) async throws {
-    let sslContext = try NIOSSLContext(configuration: tlsConfiguration)
-    let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
-    try await channel!.pipeline.addHandler(sslHandler, position: .first).get()
+    state = .connected
+    channel!.read()
   }
 
   func send(_ message: PostgreSQLFrontendMessage) async throws {
