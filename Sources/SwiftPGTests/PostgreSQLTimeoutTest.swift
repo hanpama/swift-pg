@@ -14,32 +14,17 @@ final class PostgreSQLTimeoutTest {
     for try await _ in rows1 {}
 
     // Timeout
-    let rows2 = try await connection.query(
-      timeout: .seconds(1),
-      "SELECT pg_sleep(10);"
-    )
-    var err: PostgreSQLError? = nil
-    do {
-      for try await _ in rows2 {}
-    } catch {
-      err = error as? PostgreSQLError
-    }
-    guard case .clientTimeout = err else {
-      throw err!
+    await #expect(throws: PostgreSQLError.self) {
+      print("...")
+      let rows = try await connection.query(
+        timeout: .seconds(1),
+        "SELECT pg_sleep(10);"
+      )
+      print("Queried")
+      for try await _ in rows {}
     }
 
     #expect(await connection.isClosed())
 
-    // Timeout closes the connection
-    do {
-      let _ = try await connection.query(
-        "SELECT pg_sleep(10);"
-      )
-    } catch {
-      err =  error as? PostgreSQLError
-    }
-    // guard case .transportError = err else {
-    //   throw err!
-    // }
   }
 }

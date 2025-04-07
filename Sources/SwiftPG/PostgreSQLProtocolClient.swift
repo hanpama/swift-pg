@@ -1,4 +1,6 @@
+import Logging
 import NIO
+import NIOConcurrencyHelpers
 import NIOSSL
 
 final actor PostgreSQLProtocolClient {
@@ -8,6 +10,7 @@ final actor PostgreSQLProtocolClient {
   private let messages: MessageStream
   private let continuation: MessageStream.Continuation
   private var channel: Channel?
+  private let errorBox = NIOLockedValueBox<Error?>(nil)
   private var state: State = .created
 
   enum State {
@@ -28,15 +31,31 @@ final actor PostgreSQLProtocolClient {
     guard state == .created else {
       throw PostgreSQLError.clientError("ProtocolClient is already open")
     }
+    let channel: Channel
 
     let bootstrap = ClientBootstrap(group: loop)
       .channelOption(.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
       .channelOption(.autoRead, value: false)
 
-    let messageHandler = PostgreSQLMessageHandler(continuation: self.continuation)
+    let messageHandler = PostgreSQLMessageHandler(
+      onMessage: { [weak self] message in
+        self?.continuation.yield(message)
+      },
+      onClose: { [weak self] in
+        self?.continuation.finish()
+      },
+      onError: { [weak self] error in
+        self?.errorBox.withLockedValue { e in e = error }
+        self?.continuation.finish(throwing: error)
+      }
+    )
 
     switch configs.sslmode {
-    case .require, .verifyCA, .verifyFull:
+    case .disable:
+      let _ = bootstrap.channelInitializer { channel in
+        channel.pipeline.addHandlers(messageHandler)
+      }
+    default:
       var tlsConfig = TLSConfiguration.makeClientConfiguration()
       tlsConfig.applicationProtocols = ["postgresql"]
 
@@ -65,12 +84,8 @@ final actor PostgreSQLProtocolClient {
       let sslContext = try NIOSSLContext(configuration: tlsConfig)
       let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
 
-      bootstrap.channelInitializer { channel in
+      let _ = bootstrap.channelInitializer { channel in
         channel.pipeline.addHandlers(sslHandler, messageHandler)
-      }
-    default:
-      bootstrap.channelInitializer { channel in
-        channel.pipeline.addHandler(messageHandler)
       }
     }
 
@@ -81,14 +96,21 @@ final actor PostgreSQLProtocolClient {
       channel = try await bootstrap.connect(unixDomainSocketPath: path).get()
     }
 
-    state = .connected
-    channel!.read()
+    self.state = .connected
+    self.channel = channel
+    channel.read()
   }
 
   func send(_ message: PostgreSQLFrontendMessage) async throws {
-    // print("Sending message: \(message)")
     let buffer: ByteBuffer = encodeMessage(message: message)
-    try await channel!.writeAndFlush(buffer)
+    do {
+      try await channel!.writeAndFlush(buffer)
+    } catch {
+      if let e = errorBox.withLockedValue({ $0 }) {
+        throw e
+      }
+      throw error
+    }
   }
 
   func close() async throws {
@@ -253,7 +275,7 @@ final actor PostgreSQLProtocolClient {
     -> PostgreSQLBackendMessage
   {
     let message: PostgreSQLBackendMessage
-    // print("Receiving message type: \(messageType)")
+    // print("Receiving message type: \(type)")
 
     switch type {
     case 82:  // 'R'
@@ -349,10 +371,18 @@ final actor PostgreSQLProtocolClient {
     typealias InboundIn = ByteBuffer
     typealias OutboundOut = ByteBuffer
 
-    private let continuation: AsyncThrowingStream<PostgreSQLBackendMessage?, Error>.Continuation
+    private let onMessage: @Sendable (PostgreSQLBackendMessage?) -> Void
+    private let onClose: @Sendable () -> Void
+    private let onError: @Sendable (Error?) -> Void
 
-    init(continuation: AsyncThrowingStream<PostgreSQLBackendMessage?, Error>.Continuation) {
-      self.continuation = continuation
+    init(
+      onMessage: @Sendable @escaping (PostgreSQLBackendMessage?) -> Void,
+      onClose: @Sendable @escaping () -> Void,
+      onError: @Sendable @escaping (Error?) -> Void
+    ) {
+      self.onMessage = onMessage
+      self.onClose = onClose
+      self.onError = onError
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -371,17 +401,17 @@ final actor PostgreSQLProtocolClient {
         var dataBuffer = buffer.readSlice(length: dataLength)!
 
         let message = decodeMessage(messageType, dataLength, &dataBuffer)
-        continuation.yield(message)
+        onMessage(message)
       }
-      continuation.yield(nil)
+      onMessage(nil)
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-      continuation.finish(throwing: error)
+      onError(error)
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-      continuation.finish()
+      onClose()
     }
   }
 }

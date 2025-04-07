@@ -258,12 +258,8 @@ public final actor PostgreSQLConnection {
     -> T
   {
     return try await withThrowingTaskGroup(of: Sendable?.self) { taskGroup in
-      if currentTaskGroup != nil {
-        throw PostgreSQLError.clientError("Connection is busy")
-      } else {
-        self.currentTaskGroup = taskGroup
-      }
-      defer { self.currentTaskGroup = nil }
+      self.currentTaskGroup = taskGroup
+      // defer { self.currentTaskGroup = nil }
       taskGroup.addTask {
         return try await body()
       }
