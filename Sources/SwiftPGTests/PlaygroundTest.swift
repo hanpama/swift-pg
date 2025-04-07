@@ -4,6 +4,16 @@ import Testing
 
 final class PlaygroundTest {
   @Test func test() async throws {
+    let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+
+    let promise = eventLoopGroup.next().makePromise(of: Int.self)
+    promise.fail(NSError(domain: "Test", code: 0, userInfo: nil))
+
+    promise.succeed(3)
+    promise.succeed(3)
+
+    print(try await promise.futureResult.get())
+
     // print([1,2,3,4,5][0..<2])
 
     // print(["1", ""].joined(separator: "."))

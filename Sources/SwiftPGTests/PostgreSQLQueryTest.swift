@@ -19,6 +19,7 @@ final class PostgreSQLQueryTest {
     let values = rows.map {
       row in
       let value = try row.decode(Int64.self)
+      print("Value", value)
       return value
     }
     var iterator = values.makeAsyncIterator()

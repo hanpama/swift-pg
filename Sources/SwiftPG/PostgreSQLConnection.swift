@@ -25,56 +25,7 @@ public final actor PostgreSQLConnection {
 
   public func connect(configs: PostgreSQLConnectionConfigs) async throws {
     try await protocolClient.connect(configs: configs)
-    try await protocolClient.send(.startupMessage(configs.username, configs.database))
-
-    var scramSha256Authenticator: ScramSha256Authenticator?
-
-    loop: while true {
-      switch try await receive() {
-      case .authenticationOk:
-        break
-
-      case .authenticationSasl(let mechanisms):
-        if mechanisms.contains("SCRAM-SHA-256") || mechanisms.contains("SCRAM-SHA-256-PLUS") {
-          scramSha256Authenticator = try ScramSha256Authenticator(
-            username: configs.username, password: configs.password)
-
-          try await protocolClient.send(
-            .saslInitialResponse(
-              mechanism: "SCRAM-SHA-256",
-              initialResponse: scramSha256Authenticator!.formatClientFirstMessage()
-            )
-          )
-        } else {
-          throw PostgreSQLError.clientError(
-            "No supported SASL mechanism found. Supported: \(mechanisms)")
-        }
-
-      case .authenticationSaslContinue(let challenge):
-        guard let scramSha256Authenticator = scramSha256Authenticator else {
-          throw PostgreSQLError.clientError("Unexpected SASL continue message")
-        }
-        try scramSha256Authenticator.handleServerFirstMessage(challenge)
-
-        try await protocolClient.send(
-          .saslResponse(scramSha256Authenticator.formatClientFinalMessage())
-        )
-
-      case .authenticationSaslFinal(let finalMessage):
-        guard let scramSha256Authenticator = scramSha256Authenticator else {
-          throw PostgreSQLError.clientError("Unexpected SASL final message")
-        }
-        try scramSha256Authenticator.handleServerFinalMessage(finalMessage)
-
-      case .readyForQuery:
-        state = .idle
-        break loop
-      case .errorResponse(let fields):
-        throw PostgreSQLError.databaseError(fields.description)
-      default:
-        break
-      }
-    }
+    self.state = .idle
   }
 
   public func close() async throws {
@@ -245,34 +196,35 @@ public final actor PostgreSQLConnection {
     case .some(let message):
       return message
     case .none:
-      throw PostgreSQLError.clientTimeout
+      throw PostgreSQLError.clientTimeout  // TODO: inappropriate error
     }
   }
 
-  var currentTaskGroup: ThrowingTaskGroup<Sendable?, Error>?
+  // var currentTaskGroup: ThrowingTaskGroup<Sendable?, Error>?
+  private var cancelFn: (() -> Void)?
 
   private func withTask<T: Sendable>(
     timeout: Duration?, _ body: @Sendable @escaping () async throws -> T
-  )
-    async throws
-    -> T
-  {
-    return try await withThrowingTaskGroup(of: Sendable?.self) { taskGroup in
-      self.currentTaskGroup = taskGroup
-      // defer { self.currentTaskGroup = nil }
-      taskGroup.addTask {
-        return try await body()
-      }
-      if let timeout = timeout {
+  ) async throws -> T {
+    self.cancelFn?()
+    self.cancelFn = nil
+    if let timeout = timeout {
+      return try await withThrowingTaskGroup(of: Sendable?.self) { taskGroup in
+        self.cancelFn = taskGroup.cancelAll
+        taskGroup.addTask {
+          return try await body()
+        }
         taskGroup.addTask {
           try await Task.sleep(for: timeout)
           try await self.close()
           return nil
         }
+        let result = try await taskGroup.next() as! T
+        taskGroup.cancelAll()
+        return result
       }
-      let result = try await taskGroup.next() as! T
-      taskGroup.cancelAll()
-      return result
+    } else {
+      return try await body()
     }
   }
 }
@@ -293,16 +245,24 @@ public struct PostgreSQLRows: Sendable, AsyncSequence, AsyncIteratorProtocol {
   public typealias Element = PostgreSQLRow
   public typealias AsyncIterator = Self
 
-  public func next() async throws -> PostgreSQLRow? {
+  public mutating func next() async throws -> PostgreSQLRow? {
+    if closed {
+      return nil
+    }
     if let data = try await connection.receiveRowData(rowLimit: rowLimit) {
       return .init(
         defaultDecoderMap: connection.defaultDecoderMap, fields: stmt.fields, columns: data)
     } else {
+      closed = true
       return nil
     }
   }
 
-  public func close() async throws {
+  public mutating func close() async throws {
+    if closed {
+      return
+    }
+    closed = true
     try await connection.drainUntilReadyForQuery()
   }
 
@@ -313,6 +273,7 @@ public struct PostgreSQLRows: Sendable, AsyncSequence, AsyncIteratorProtocol {
   let connection: PostgreSQLConnection
   let stmt: PostgreSQLStatement
   let rowLimit: Int32
+  var closed: Bool = false
 }
 
 public struct PostgreSQLRow: Sendable {

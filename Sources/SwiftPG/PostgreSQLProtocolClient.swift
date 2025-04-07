@@ -96,9 +96,59 @@ final actor PostgreSQLProtocolClient {
       channel = try await bootstrap.connect(unixDomainSocketPath: path).get()
     }
 
-    self.state = .connected
     self.channel = channel
     channel.read()
+
+    try await send(.startupMessage(configs.username, configs.database))
+
+    var scramSha256Authenticator: ScramSha256Authenticator?
+
+    loop: while true {
+      switch try await receive() {
+      case .authenticationOk:
+        break
+
+      case .authenticationSasl(let mechanisms):
+        if mechanisms.contains("SCRAM-SHA-256") || mechanisms.contains("SCRAM-SHA-256-PLUS") {
+          scramSha256Authenticator = try ScramSha256Authenticator(
+            username: configs.username, password: configs.password)
+
+          try await send(
+            .saslInitialResponse(
+              mechanism: "SCRAM-SHA-256",
+              initialResponse: scramSha256Authenticator!.formatClientFirstMessage()
+            )
+          )
+        } else {
+          throw PostgreSQLError.clientError(
+            "No supported SASL mechanism found. Supported: \(mechanisms)")
+        }
+
+      case .authenticationSaslContinue(let challenge):
+        guard let scramSha256Authenticator = scramSha256Authenticator else {
+          throw PostgreSQLError.clientError("Unexpected SASL continue message")
+        }
+        try scramSha256Authenticator.handleServerFirstMessage(challenge)
+
+        try await send(
+          .saslResponse(scramSha256Authenticator.formatClientFinalMessage())
+        )
+
+      case .authenticationSaslFinal(let finalMessage):
+        guard let scramSha256Authenticator = scramSha256Authenticator else {
+          throw PostgreSQLError.clientError("Unexpected SASL final message")
+        }
+        try scramSha256Authenticator.handleServerFinalMessage(finalMessage)
+
+      case .errorResponse(let fields):
+        throw PostgreSQLError.databaseError(fields.description)
+      case .readyForQuery:
+        self.state = .connected
+        break loop
+      default:
+        break
+      }
+    }
   }
 
   func send(_ message: PostgreSQLFrontendMessage) async throws {
@@ -328,7 +378,7 @@ final actor PostgreSQLProtocolClient {
     default:
       message = .unknown
     }
-    // print("Received message: \(message)")
+    print("Received message: \(message)")
     return message
   }
 
