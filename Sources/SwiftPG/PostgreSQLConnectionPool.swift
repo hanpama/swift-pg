@@ -29,10 +29,11 @@ public final actor PostgreSQLConnectionPool {
     }
 
     if connections.count < maxConnections {
-      let connection = PostgreSQLConnection(eventLoopGroup: eventLoopGroup)
+      let connection = try await PostgreSQLConnection(
+        eventLoopGroup: eventLoopGroup,
+        configs: configuration
+      )
       connections[ObjectIdentifier(connection)] = connection
-
-      try await connection.connect(configs: configuration)
       return connection
     }
 
@@ -41,7 +42,7 @@ public final actor PostgreSQLConnectionPool {
     if let timeout = timeout {
       Task {
         try await Task.sleep(for: timeout)
-        promise.fail(PostgreSQLError.clientTimeout)
+        promise.fail(PostgreSQLError.operationTimeout)
       }
     }
     return try await promise.futureResult.get()

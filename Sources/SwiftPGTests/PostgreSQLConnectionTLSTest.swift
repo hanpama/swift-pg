@@ -8,8 +8,8 @@ import Testing
 final class PostgreSQLConnectionTLSTest {
   @Test func testConnectionTLSRequire() async throws {
     let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    let conn = PostgreSQLConnection(eventLoopGroup: loopGroup)
-    try await conn.connect(
+    let conn = try await PostgreSQLConnection(
+      eventLoopGroup: loopGroup,
       configs: .init(
         socketAddress: getTLSHostPort(),
         username: "postgres",
@@ -20,18 +20,18 @@ final class PostgreSQLConnectionTLSTest {
         sslkey: nil,
         sslrootcert: nil,
         sslcrl: nil
-      )
-    )
+      ))
+
     try await conn.execute("SELECT VERSION();")
     try await conn.close()
   }
 
   @Test func testConnectionTLSVerifyCA() async throws {
     let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    let conn = PostgreSQLConnection(eventLoopGroup: loopGroup)
 
     await #expect(throws: NIOSSLError.self) {
-      try await conn.connect(
+      try await PostgreSQLConnection(
+        eventLoopGroup: loopGroup,
         configs: .init(
           socketAddress: getTLSHostPort(),
           username: "postgres",
@@ -42,8 +42,8 @@ final class PostgreSQLConnectionTLSTest {
           sslkey: nil,
           sslrootcert: nil,
           sslcrl: nil
-        )
-      )
+        ))
+
     }
   }
 }

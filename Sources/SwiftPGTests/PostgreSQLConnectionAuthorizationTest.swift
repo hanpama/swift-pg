@@ -8,20 +8,15 @@ import Testing
 final class PostgreSQLConnectionAuthorizationTest {
   @Test func testConnectionTrust() async throws {
     let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    let conn = PostgreSQLConnection(eventLoopGroup: loopGroup)
-    try await conn.connect(
-      configs: getInsecureConfigs()
-    )
+    let conn = try await PostgreSQLConnection(eventLoopGroup: loopGroup, configs: getInsecureConfigs())
     try await conn.execute("SELECT VERSION();")
     try await conn.close()
   }
 
   @Test func testConnectionSasl() async throws {
     let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    let conn = PostgreSQLConnection(eventLoopGroup: loopGroup)
-    try await conn.connect(
-      configs: getSecureConfigs()
-    )
+    let conn = try await PostgreSQLConnection(eventLoopGroup: loopGroup, configs: getSecureConfigs())
+
     try await conn.execute("SELECT VERSION();")
     try await conn.close()
   }

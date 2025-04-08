@@ -4,15 +4,19 @@ import Testing
 
 final class PlaygroundTest {
   @Test func test() async throws {
-    let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    // let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
 
-    let promise = eventLoopGroup.next().makePromise(of: Int.self)
-    promise.fail(NSError(domain: "Test", code: 0, userInfo: nil))
+    // let promise = eventLoopGroup.next().makePromise(of: Int.self)
+    // promise.fail(NSError(domain: "Test", code: 0, userInfo: nil))
 
-    promise.succeed(3)
-    promise.succeed(3)
+    // promise.succeed(3)
+    // promise.succeed(3)
 
-    print(try await promise.futureResult.get())
+    // let task = Task {
+    //   try await Task.sleep(nanoseconds: 1_000_000_000)
+    //   return 3
+    // }
+    // task.cancel()
 
     // print([1,2,3,4,5][0..<2])
 

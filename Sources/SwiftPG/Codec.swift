@@ -574,3 +574,31 @@ extension PostgreSQLCodableArrayElement where Self: PostgreSQLDecodable {
     self = try .init(pgTypeOid: elemTypeOid, buffer: &buffer)
   }
 }
+
+
+let DEFAULT_DECODER_MAP: [Int32: PostgreSQLDecodable.Type] = [
+  16: Bool.self,
+  1000: [Bool].self,
+  21: Int16.self,
+  1005: [Int16].self,
+  23: Int32.self,
+  1007: [Int32].self,
+  20: Int64.self,
+  1016: [Int64].self,
+  25: String.self,
+  1043: String.self,
+  1009: [String].self,
+  1015: [String].self,
+  700: Float.self,
+  1021: [Float].self,
+  701: Double.self,
+  1022: [Double].self,
+  1700: Decimal.self,
+  1231: [Decimal].self,
+  1114: Date.self,
+  1184: Date.self,
+  1115: [Date].self,
+  1185: [Date].self,
+  2950: UUID.self,
+  2951: [UUID].self,
+]

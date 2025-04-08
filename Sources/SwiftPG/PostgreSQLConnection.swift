@@ -1,6 +1,7 @@
 import Foundation
 import Logging
 import NIO
+import NIOConcurrencyHelpers
 import NIOSSL
 
 public final actor PostgreSQLConnection {
@@ -8,68 +9,47 @@ public final actor PostgreSQLConnection {
   private let defaultTimeout: Duration?
   private let protocolClient: PostgreSQLProtocolClient
   let defaultDecoderMap: [Int32: PostgreSQLDecodable.Type] = DEFAULT_DECODER_MAP
-  private var state: State = .initialized
 
-  private enum State {
-    case initialized
-    case idle
-    case busy
-    case closed
-  }
-
-  public init(eventLoopGroup: EventLoopGroup, defaultTimeout: Duration? = nil) {
+  public init(
+    eventLoopGroup: EventLoopGroup,
+    configs: PostgreSQLConnectionConfigs,
+    defaultTimeout: Duration? = nil
+  ) async throws {
     self.eventLoopGroup = eventLoopGroup
     self.defaultTimeout = defaultTimeout
-    self.protocolClient = PostgreSQLProtocolClient(eventLoopGroup.next())
-  }
-
-  public func connect(configs: PostgreSQLConnectionConfigs) async throws {
-    try await protocolClient.connect(configs: configs)
-    self.state = .idle
+    self.protocolClient = try await PostgreSQLProtocolClient(eventLoopGroup.next(), configs)
   }
 
   public func close() async throws {
-    guard state != .closed else {
-      return
-    }
-    currentTaskGroup?.cancelAll()
-    if !(await protocolClient.isClosed()) {
+    if !protocolClient.isClosed() {
       try await protocolClient.send(.terminate)
       try await protocolClient.close()
     }
-    state = .closed
   }
 
   public func isClosed() -> Bool {
-    return state == .closed
+    return protocolClient.isClosed()
   }
 
   public func query(
-    timeout: Duration? = nil,
-    rowBuffer: Int32 = 0,
-    _ sql: String,
+    timeout: Duration? = nil, rowBuffer: Int32 = 0, _ sql: String,
     _ params: [PostgreSQLEncodable] = []
-  )
-    async throws -> PostgreSQLRows
-  {
-    guard state == .idle else {
-      throw PostgreSQLError.clientError("Connection is not idle")
-    }
-    return try await withTask(timeout: timeout) {
+  ) async throws -> PostgreSQLRows {
+    let opCtx = try makeOpCtx(timeout: timeout)
+    let stmt = try await opCtx.run {
       let stmt = try await self.parseStmt(name: "", sql: sql)
       try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: rowBuffer)
       try await self.sync()
-      return PostgreSQLRows(connection: self, stmt: stmt, rowLimit: rowBuffer)
+      return stmt
     }
+    return PostgreSQLRows(connection: self, stmt: stmt, rowLimit: rowBuffer, opCtx: opCtx)
   }
 
   public func execute(timeout: Duration? = nil, _ sql: String, _ params: [PostgreSQLEncodable] = [])
     async throws
   {
-    guard state == .idle else {
-      throw PostgreSQLError.clientError("Connection is not idle")
-    }
-    try await withTask(timeout: timeout) {
+    let opCtx = try makeOpCtx(timeout: timeout)
+    try await opCtx.run {
       let stmt = try await self.parseStmt(name: "", sql: sql)
       try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
       try await self.sync()
@@ -79,29 +59,24 @@ public final actor PostgreSQLConnection {
 
   public func batchQuery(
     timeout: Duration? = nil, _ sql: String, _ batches: [[PostgreSQLEncodable]]
-  )
-    async throws -> PostgreSQLRows
-  {
-    guard state == .idle else {
-      throw PostgreSQLError.clientError("Connection is not idle")
-    }
-    return try await withTask(timeout: timeout) {
+  ) async throws -> PostgreSQLRows {
+    let opCtx = try makeOpCtx(timeout: timeout)
+    let stmt = try await opCtx.run {
       let stmt = try await self.parseStmt(name: "", sql: sql)
       for params in batches {
         try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
       }
       try await self.sync()
-      return PostgreSQLRows(connection: self, stmt: stmt, rowLimit: 0)
+      return stmt
     }
+    return PostgreSQLRows(connection: self, stmt: stmt, rowLimit: 0, opCtx: opCtx)
   }
 
   public func batchExecute(
     timeout: Duration? = nil, _ sql: String, _ batches: [[PostgreSQLEncodable]]
   ) async throws {
-    guard state == .idle else {
-      throw PostgreSQLError.clientError("Connection is not idle")
-    }
-    try await withTask(timeout: timeout) {
+    let opCtx = try makeOpCtx(timeout: timeout)
+    try await opCtx.run {
       let stmt = try await self.parseStmt(name: "", sql: sql)
       for params in batches {
         try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
@@ -119,7 +94,6 @@ public final actor PostgreSQLConnection {
       case .portalSuspended:
         try await protocolClient.send(.execute("", rowLimit))
       case .readyForQuery:
-        state = .idle
         return nil
       case .errorResponse(let message):
         throw PostgreSQLError.databaseError(message.description)
@@ -133,7 +107,6 @@ public final actor PostgreSQLConnection {
     loop: while true {
       switch try await receive() {
       case .readyForQuery:
-        state = .idle
         break loop
       case .errorResponse(let fields):
         throw PostgreSQLError.databaseError(fields.description)
@@ -196,40 +169,66 @@ public final actor PostgreSQLConnection {
     case .some(let message):
       return message
     case .none:
-      throw PostgreSQLError.clientTimeout  // TODO: inappropriate error
+      throw PostgreSQLError.operationTimeout  // TODO: inappropriate error
     }
   }
 
-  // var currentTaskGroup: ThrowingTaskGroup<Sendable?, Error>?
-  private var cancelFn: (() -> Void)?
+  private var currentOpCtx: OperationContext? = nil
 
-  private func withTask<T: Sendable>(
-    timeout: Duration?, _ body: @Sendable @escaping () async throws -> T
-  ) async throws -> T {
-    self.cancelFn?()
-    self.cancelFn = nil
-    if let timeout = timeout {
-      return try await withThrowingTaskGroup(of: Sendable?.self) { taskGroup in
-        self.cancelFn = taskGroup.cancelAll
-        taskGroup.addTask {
-          return try await body()
-        }
-        taskGroup.addTask {
-          try await Task.sleep(for: timeout)
-          try await self.close()
-          return nil
-        }
-        let result = try await taskGroup.next() as! T
-        taskGroup.cancelAll()
-        return result
+  private func makeOpCtx(timeout: Duration?) throws -> OperationContext {
+    if let currentOpCtx = currentOpCtx {
+      if !currentOpCtx.isClosed() {
+        throw PostgreSQLError.clientError("Another operation is in progress")
       }
-    } else {
-      return try await body()
     }
+    let opctx = OperationContext(timeout: timeout)
+    currentOpCtx = opctx
+    return opctx
   }
 }
 
-public final class PostgreSQLStatement: Sendable {
+struct OperationContext: Sendable {
+  private let cancelCurrent: NIOLockedValueBox<(@Sendable () -> Void)?> = .init(nil)
+  private let closeError: NIOLockedValueBox<Error?> = .init(nil)
+  private var timeoutTask: Task<(), any Error>?
+
+  init(timeout: Duration?) {
+    if let timeout = timeout {
+      timeoutTask = Task { [self] in
+        try await Task.sleep(for: timeout)
+        closeError.withLockedValue { $0 = PostgreSQLError.operationTimeout }
+        cancelCurrent.withLockedValue { $0?() }
+      }
+    }
+  }
+
+  func run<T: Sendable>(_ body: @Sendable @escaping () async throws -> T) async throws -> T {
+    if let err = closeError.withLockedValue({ $0 }) {
+      throw err
+    }
+    let task = Task { try await body() }
+    cancelCurrent.withLockedValue { $0 = task.cancel }
+    do {
+      return try await task.value
+    } catch _ as CancellationError {
+      throw closeError.withLockedValue { $0! }
+    } catch {
+      throw error
+    }
+  }
+
+  func close() {
+    closeError.withLockedValue { $0 = PostgreSQLError.operationClosed }
+    cancelCurrent.withLockedValue { $0?() }
+    timeoutTask?.cancel()
+  }
+
+  func isClosed() -> Bool {
+    return closeError.withLockedValue { $0 != nil }
+  }
+}
+
+public struct PostgreSQLStatement: Sendable {
   let name: String
   let fields: [PostgreSQLFieldDescription]
   let parameterOids: [Int32]
@@ -246,24 +245,24 @@ public struct PostgreSQLRows: Sendable, AsyncSequence, AsyncIteratorProtocol {
   public typealias AsyncIterator = Self
 
   public mutating func next() async throws -> PostgreSQLRow? {
-    if closed {
-      return nil
+    let data = try await opCtx.run { [self] in
+      try await self.connection.receiveRowData(rowLimit: rowLimit)
     }
-    if let data = try await connection.receiveRowData(rowLimit: rowLimit) {
+    if let data = data {
       return .init(
-        defaultDecoderMap: connection.defaultDecoderMap, fields: stmt.fields, columns: data)
+        defaultDecoderMap: connection.defaultDecoderMap,
+        fields: stmt.fields,
+        columns: data
+      )
     } else {
-      closed = true
+      opCtx.close()
       return nil
     }
   }
 
   public mutating func close() async throws {
-    if closed {
-      return
-    }
-    closed = true
     try await connection.drainUntilReadyForQuery()
+    opCtx.close()
   }
 
   public func makeAsyncIterator() -> AsyncIterator {
@@ -273,7 +272,7 @@ public struct PostgreSQLRows: Sendable, AsyncSequence, AsyncIteratorProtocol {
   let connection: PostgreSQLConnection
   let stmt: PostgreSQLStatement
   let rowLimit: Int32
-  var closed: Bool = false
+  let opCtx: OperationContext
 }
 
 public struct PostgreSQLRow: Sendable {
@@ -312,37 +311,11 @@ public protocol PostgreSQLDecodable: Sendable {
   init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws
 }
 
-public enum PostgreSQLError: Error, Sendable {
+public enum PostgreSQLError: Error, Sendable, Equatable {
   // case transportError(String)
   case databaseError(String)
   case clientError(String)
   case codecError(String)
-  case clientTimeout
+  case operationTimeout
+  case operationClosed
 }
-
-let DEFAULT_DECODER_MAP: [Int32: PostgreSQLDecodable.Type] = [
-  16: Bool.self,
-  1000: [Bool].self,
-  21: Int16.self,
-  1005: [Int16].self,
-  23: Int32.self,
-  1007: [Int32].self,
-  20: Int64.self,
-  1016: [Int64].self,
-  25: String.self,
-  1043: String.self,
-  1009: [String].self,
-  1015: [String].self,
-  700: Float.self,
-  1021: [Float].self,
-  701: Double.self,
-  1022: [Double].self,
-  1700: Decimal.self,
-  1231: [Decimal].self,
-  1114: Date.self,
-  1184: Date.self,
-  1115: [Date].self,
-  1185: [Date].self,
-  2950: UUID.self,
-  2951: [UUID].self,
-]

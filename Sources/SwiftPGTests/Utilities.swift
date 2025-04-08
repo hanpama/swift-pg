@@ -44,9 +44,6 @@ func getTLSHostPort() -> PostgreSQLConnectionConfigs.SocketAddress {
 
 func createTestConnection() async throws -> PostgreSQLConnection {
   let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-  let conn = PostgreSQLConnection(eventLoopGroup: loopGroup)
-
-  try await conn.connect(configs: getSecureConfigs())
-
+  let conn = try await PostgreSQLConnection(eventLoopGroup: loopGroup, configs: getSecureConfigs())
   return conn
 }
