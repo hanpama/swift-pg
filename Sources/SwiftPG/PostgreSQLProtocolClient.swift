@@ -1,22 +1,14 @@
-import Logging
-import NIO
-import NIOConcurrencyHelpers
+import AsyncAlgorithms
+@preconcurrency import NIO
 import NIOSSL
 
 final class PostgreSQLProtocolClient: Sendable {
-  typealias MessageStream = AsyncThrowingStream<PostgreSQLBackendMessage?, Error>
-
-  private let messages: MessageStream
-  private let continuation: MessageStream.Continuation
   private let channel: Channel
-  // private let errorBox = NIOLockedValueBox<Error?>(nil)
-  // private let inbound: NIOAsyncChannelInboundStream<PostgreSQLBackendMessage>
+  private let messageStream: AsyncThrowingChannel<PostgreSQLBackendMessage?, Error>
   private let outbound: NIOAsyncChannelOutboundWriter<PostgreSQLFrontendMessage>
 
   init(_ loop: EventLoop, _ configs: PostgreSQLConnectionConfigs) async throws {
-    var maybeContinuation: AsyncThrowingStream<PostgreSQLBackendMessage?, Error>.Continuation?
-    messages = AsyncThrowingStream { maybeContinuation = $0 }
-    continuation = maybeContinuation!
+    let messageStream = AsyncThrowingChannel<PostgreSQLBackendMessage?, Error>()
 
     let socketAddress: SocketAddress =
       switch configs.socketAddress {
@@ -49,18 +41,25 @@ final class PostgreSQLProtocolClient: Sendable {
       of: NIOAsyncChannelOutboundWriter<PostgreSQLFrontendMessage>.self)
 
     Task {
-      try await asyncChannel.executeThenClose { inbound, outbound in
-        outboundPromise.succeed(outbound)
-        for try await message in inbound {
-          maybeContinuation!.yield(message)
+      do {
+        try await asyncChannel.executeThenClose { inbound, outbound in
+          outboundPromise.succeed(outbound)
+          for try await message in inbound {
+            await messageStream.send(message)
+          }
+          messageStream.finish()
         }
-        maybeContinuation!.finish()
+      } catch {
+        messageStream.fail(error)
+        outboundPromise.fail(error)
       }
     }
 
+    self.messageStream = messageStream
     self.outbound = try await outboundPromise.futureResult.get()
     self.channel = channel
 
+    try await send(.startupMessage(configs.username, configs.database))
     try await authenticate(configs: configs)
   }
 
@@ -77,7 +76,7 @@ final class PostgreSQLProtocolClient: Sendable {
   }
 
   func receive() async throws -> PostgreSQLBackendMessage? {
-    for try await message in messages {
+    for try await message in messageStream {
       return message
     }
     return nil
@@ -120,8 +119,6 @@ final class PostgreSQLProtocolClient: Sendable {
   }
 
   private func authenticate(configs: PostgreSQLConnectionConfigs) async throws {
-    try await send(.startupMessage(configs.username, configs.database))
-
     var scramSha256Authenticator: ScramSha256Authenticator?
 
     loop: while true {
@@ -191,9 +188,6 @@ private final class PostgreSQLMessageCodec: ByteToMessageDecoder, MessageToByteE
     guard buffer.readableBytes >= dataLength + 5 else {
       return .needMoreData
     }
-    // print(
-    //   "Decoding message of type \(messageType) with length \(dataLength). \(messageLength) bytes total."
-    // )
 
     buffer.moveReaderIndex(forwardBy: 5)  // Move past the message type and length
     var dataBuffer = buffer.readSlice(length: dataLength)!

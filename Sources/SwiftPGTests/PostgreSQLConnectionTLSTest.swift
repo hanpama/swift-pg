@@ -43,7 +43,6 @@ final class PostgreSQLConnectionTLSTest {
           sslrootcert: nil,
           sslcrl: nil
         ))
-
     }
   }
 }
