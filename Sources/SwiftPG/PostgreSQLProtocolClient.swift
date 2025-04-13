@@ -1,93 +1,124 @@
-import Logging
-import NIO
-import NIOConcurrencyHelpers
+import AsyncAlgorithms
+@preconcurrency import NIO
 import NIOSSL
 
 final class PostgreSQLProtocolClient: Sendable {
-  typealias MessageStream = AsyncThrowingStream<PostgreSQLBackendMessage?, Error>
-
-  private let messages: MessageStream
-  private let continuation: MessageStream.Continuation
   private let channel: Channel
-  private let errorBox = NIOLockedValueBox<Error?>(nil)
+  private let messageStream: AsyncThrowingChannel<PostgreSQLBackendMessage?, Error>
+  private let outbound: NIOAsyncChannelOutboundWriter<PostgreSQLFrontendMessage>
 
   init(_ loop: EventLoop, _ configs: PostgreSQLConnectionConfigs) async throws {
-    var maybeContinuation: AsyncThrowingStream<PostgreSQLBackendMessage?, Error>.Continuation?
-    messages = AsyncThrowingStream { maybeContinuation = $0 }
-    continuation = maybeContinuation!
+    let messageStream = AsyncThrowingChannel<PostgreSQLBackendMessage?, Error>()
+
+    let socketAddress: SocketAddress =
+      switch configs.socketAddress {
+      case .hostPort(let host, let port):
+        try .makeAddressResolvingHost(host, port: port)
+      case .unixDomainSocket(let path):
+        try .init(unixDomainSocketPath: path)
+      }
+
+    let messageCodec = PostgreSQLMessageCodec()
+    var handlers: [ChannelHandler] = [
+      ByteToMessageHandler(messageCodec),
+      MessageToByteHandler(messageCodec),
+    ]
+    if let sslHandler = try Self.getTLSHandler(configs: configs) {
+      handlers.insert(sslHandler, at: 0)
+    }
 
     let bootstrap = ClientBootstrap(group: loop)
-      .channelOption(.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
-      .channelOption(.autoRead, value: false)
+      .channelInitializer({ $0.pipeline.addHandlers(handlers) })
 
-    switch configs.socketAddress {
-    case .hostPort(let host, let port):
-      channel = try await bootstrap.connect(host: host, port: port).get()
-    case .unixDomainSocket(let path):
-      channel = try await bootstrap.connect(unixDomainSocketPath: path).get()
+    let channel = try await bootstrap.connect(to: socketAddress).get()
+    let asyncChannel = try await channel.eventLoop.submit {
+      try NIOAsyncChannel<PostgreSQLBackendMessage, PostgreSQLFrontendMessage>(
+        wrappingChannelSynchronously: channel
+      )
+    }.get()
+
+    let outboundPromise = loop.makePromise(
+      of: NIOAsyncChannelOutboundWriter<PostgreSQLFrontendMessage>.self)
+
+    Task {
+      do {
+        try await asyncChannel.executeThenClose { inbound, outbound in
+          outboundPromise.succeed(outbound)
+          for try await message in inbound {
+            await messageStream.send(message)
+          }
+          messageStream.finish()
+        }
+      } catch {
+        messageStream.fail(error)
+        outboundPromise.fail(error)
+      }
     }
 
-    let messageHandler = PostgreSQLMessageHandler(
-      onMessage: { message in
-        self.continuation.yield(message)
-      },
-      onClose: {
-        self.continuation.finish(throwing: self.errorBox.withLockedValue { $0 })
-      },
-      onError: { error in
-        self.errorBox.withLockedValue { $0 = error }
-      }
-    )
-
-    switch configs.sslmode {
-    case .disable:
-      try await channel.pipeline.addHandlers(messageHandler)
-    default:
-      var tlsConfig = TLSConfiguration.makeClientConfiguration()
-      tlsConfig.applicationProtocols = ["postgresql"]
-
-      if case .require = configs.sslmode {
-        tlsConfig.certificateVerification = .none
-      } else if case .verifyCA = configs.sslmode {
-        tlsConfig.certificateVerification = .noHostnameVerification
-      } else if case .verifyFull = configs.sslmode {
-        tlsConfig.certificateVerification = .fullVerification
-      }
-
-      if let sslcert = configs.sslcert {
-        let certs = try NIOSSLCertificate.fromPEMFile(sslcert)
-        tlsConfig.certificateChain = certs.map { .certificate($0) }
-      }
-      if let sslkey = configs.sslkey {
-        let privateKey = try NIOSSLPrivateKey(file: sslkey, format: .pem)
-        tlsConfig.privateKey = .privateKey(privateKey)
-      }
-      if let sslrootcert = configs.sslrootcert {
-        tlsConfig.additionalTrustRoots = [.file(sslrootcert)]
-      }
-      guard case let .hostPort(host, _) = configs.socketAddress else {
-        throw PostgreSQLError.clientError("Host is required for TLS connections")
-      }
-      let sslContext = try NIOSSLContext(configuration: tlsConfig)
-      let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
-
-      try await channel.pipeline.addHandlers(sslHandler, messageHandler)
-    }
-
-    channel.read()
-    // let achan = try NIOAsyncChannel<PostgreSQLBackendMessage, PostgreSQLFrontendMessage>(
-    //   wrappingChannelSynchronously: channel
-    // )
-
-    // try await achan.executeThenClose { inbound, outbound in
-      // inbound.
-      // outbound.
-      // inbound.read()
-      // return outbound
-    // }
+    self.messageStream = messageStream
+    self.outbound = try await outboundPromise.futureResult.get()
+    self.channel = channel
 
     try await send(.startupMessage(configs.username, configs.database))
+    try await authenticate(configs: configs)
+  }
 
+  func send(_ message: PostgreSQLFrontendMessage) async throws {
+    try await outbound.write(message)
+  }
+
+  func close() async throws {
+    try await channel.close()
+  }
+
+  func isClosed() -> Bool {
+    return !channel.isActive
+  }
+
+  func receive() async throws -> PostgreSQLBackendMessage? {
+    for try await message in messageStream {
+      return message
+    }
+    return nil
+  }
+
+  private static func getTLSHandler(configs: PostgreSQLConnectionConfigs) throws
+    -> NIOSSLClientHandler?
+  {
+    guard configs.sslmode != .disable else {
+      return nil
+    }
+    var tlsConfig = TLSConfiguration.makeClientConfiguration()
+    tlsConfig.applicationProtocols = ["postgresql"]
+
+    if case .require = configs.sslmode {
+      tlsConfig.certificateVerification = .none
+    } else if case .verifyCA = configs.sslmode {
+      tlsConfig.certificateVerification = .noHostnameVerification
+    } else if case .verifyFull = configs.sslmode {
+      tlsConfig.certificateVerification = .fullVerification
+    }
+
+    if let sslcert = configs.sslcert {
+      let certs = try NIOSSLCertificate.fromPEMFile(sslcert)
+      tlsConfig.certificateChain = certs.map { .certificate($0) }
+    }
+    if let sslkey = configs.sslkey {
+      let privateKey = try NIOSSLPrivateKey(file: sslkey, format: .pem)
+      tlsConfig.privateKey = .privateKey(privateKey)
+    }
+    if let sslrootcert = configs.sslrootcert {
+      tlsConfig.additionalTrustRoots = [.file(sslrootcert)]
+    }
+    guard case let .hostPort(host, _) = configs.socketAddress else {
+      throw PostgreSQLError.clientError("Host is required for TLS connections")
+    }
+    let sslContext = try NIOSSLContext(configuration: tlsConfig)
+    let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
+    return sslHandler
+  }
+
+  private func authenticate(configs: PostgreSQLConnectionConfigs) async throws {
     var scramSha256Authenticator: ScramSha256Authenticator?
 
     loop: while true {
@@ -135,36 +166,130 @@ final class PostgreSQLProtocolClient: Sendable {
       }
     }
   }
+}
 
-  func send(_ message: PostgreSQLFrontendMessage) async throws {
-    let buffer: ByteBuffer = Self.encodeMessage(message: message)
-    do {
-      try await channel.writeAndFlush(buffer)
-    } catch {
-      if let e = errorBox.withLockedValue({ $0 }) {
-        throw e
-      }
-      throw error
+private final class PostgreSQLMessageCodec: ByteToMessageDecoder, MessageToByteEncoder, Sendable {
+  typealias OutboundIn = PostgreSQLFrontendMessage
+  typealias InboundOut = PostgreSQLBackendMessage
+
+  func encode(data: PostgreSQLFrontendMessage, out: inout NIOCore.ByteBuffer) throws {
+    var buffer = Self.encodeMessage(message: data)
+    out.writeBuffer(&buffer)
+  }
+
+  func decode(context: ChannelHandlerContext, buffer: inout ByteBuffer) throws -> DecodingState {
+    guard buffer.readableBytes >= 5 else {
+      return .needMoreData
     }
-  }
+    let messageType = buffer.getInteger(at: buffer.readerIndex, as: UInt8.self)!
+    let messageLength = buffer.getInteger(at: buffer.readerIndex + 1, as: Int32.self)!
 
-  func close() async throws {
-    try await channel.close()
-  }
-
-  func isClosed() -> Bool {
-    return !channel.isActive
-  }
-
-  func receive() async throws -> PostgreSQLBackendMessage? {
-    for try await message in messages {
-      if let message = message {
-        return message
-      } else {
-        channel.read()
-      }
+    let dataLength = Int(messageLength) - 4  // 4 bytes for the length itself
+    guard buffer.readableBytes >= dataLength + 5 else {
+      return .needMoreData
     }
-    return nil
+
+    buffer.moveReaderIndex(forwardBy: 5)  // Move past the message type and length
+    var dataBuffer = buffer.readSlice(length: dataLength)!
+    let message = Self.decodeMessage(messageType, dataLength, &dataBuffer)
+    context.fireChannelRead(wrapInboundOut(message))
+    return .continue
+  }
+
+  private static func decodeMessage(_ type: UInt8, _ length: Int, _ buffer: inout ByteBuffer)
+    -> PostgreSQLBackendMessage
+  {
+    let message: PostgreSQLBackendMessage
+    // print("Receiving message type: \(type)")
+
+    switch type {
+    case 82:  // 'R'
+      let authMessageType = buffer.readInteger(as: Int32.self)!
+      switch authMessageType {
+      case 0:
+        message = .authenticationOk
+      case 10:
+        message = .authenticationSasl(
+          buffer.readNullTerminatedString()!.split(separator: ",").map { String($0) })
+      case 11:
+        message = .authenticationSaslContinue(buffer.readString(length: length - 4)!)
+      case 12:
+        message = .authenticationSaslFinal(buffer.readString(length: length - 4)!)
+      default:
+        message = .unknownAuthentication
+      }
+    case 67:  // 'C'
+      message = .commandComplete(buffer.readNullTerminatedString()!)
+    case 69:  // 'E'
+      message = .errorResponse(decodeServerErrorNoticeMessage(buffer: &buffer))
+    case 90:  // 'Z'
+      message = .readyForQuery(buffer.readInteger(as: UInt8.self)!)
+    case 84:  // 'T'
+      message = .rowDescription(
+        (0..<buffer.readInteger(as: Int16.self)!).map { _ in
+          .init(
+            name: buffer.readNullTerminatedString()!,
+            tableOID: buffer.readInteger(as: Int32.self)!,
+            columnAttr: buffer.readInteger(as: Int16.self)!,
+            dataTypeOID: buffer.readInteger(as: Int32.self)!,
+            dataTypeSize: buffer.readInteger(as: Int16.self)!,
+            typeModifier: buffer.readInteger(as: Int32.self)!,
+            formatCode: buffer.readInteger(as: Int16.self)!
+          )
+        }
+      )
+    case 116:  // 't'
+      message = .parameterDescription(
+        (0..<buffer.readInteger(as: Int16.self)!).map { _ in
+          buffer.readInteger(as: Int32.self)!
+        }
+      )
+    case 68:  // 'D'
+      message = .dataRow(columns: buffer.readInteger(as: Int16.self)!, columnData: buffer)
+    case 49:  // '1'
+      message = .parseComplete
+    case 50:  // '2'
+      message = .bindComplete
+    default:
+      message = .unknown
+    }
+    // print("Received message: \(message)")
+    return message
+  }
+
+  private static func decodeServerErrorNoticeMessage(buffer: inout ByteBuffer)
+    -> PostgreSQLErrorNoticeMessage
+  {
+    var errorFields: PostgreSQLErrorNoticeMessage = []
+    while let fieldType = buffer.readInteger(as: UInt8.self), fieldType != 0 {
+      guard let fieldValue = buffer.readNullTerminatedString() else {
+        continue
+      }
+      let field: PostgreSQLErrorNoticeMessageField
+      switch fieldType {
+      case 0x53: field = .severity(fieldValue)  // 'S'
+      case 0x56: field = .severity(fieldValue)  // 'V'
+      case 0x43: field = .code(fieldValue)  // 'C'
+      case 0x4D: field = .message(fieldValue)  // 'M'
+      case 0x44: field = .detail(fieldValue)  // 'D'
+      case 0x48: field = .hint(fieldValue)  // 'H'
+      case 0x50: field = .position(fieldValue)  // 'P'
+      case 0x70: field = .internalPosition(fieldValue)  // 'p'
+      case 0x71: field = .internalQuery(fieldValue)  // 'q'
+      case 0x57: field = .where_(fieldValue)  // 'W'
+      case 0x73: field = .schemaName(fieldValue)  // 's'
+      case 0x74: field = .tableName(fieldValue)  // 't'
+      case 0x63: field = .columnName(fieldValue)  // 'c'
+      case 0x64: field = .dataTypeName(fieldValue)  // 'd'
+      case 0x6E: field = .constraintName(fieldValue)  // 'n'
+      case 0x46: field = .file(fieldValue)  // 'F'
+      case 0x4C: field = .line(fieldValue)  // 'L'
+      case 0x52: field = .routine(fieldValue)  // 'R'
+      default: continue
+      }
+      errorFields.append(field)
+    }
+    return errorFields
   }
 
   private static func encodeMessage(message: PostgreSQLFrontendMessage) -> ByteBuffer {
@@ -304,149 +429,4 @@ final class PostgreSQLProtocolClient: Sendable {
     }
     return buffer
   }
-
-  private static func decodeMessage(_ type: UInt8, _ length: Int, _ buffer: inout ByteBuffer)
-    -> PostgreSQLBackendMessage
-  {
-    let message: PostgreSQLBackendMessage
-    // print("Receiving message type: \(type)")
-
-    switch type {
-    case 82:  // 'R'
-      let authMessageType = buffer.readInteger(as: Int32.self)!
-      switch authMessageType {
-      case 0:
-        message = .authenticationOk
-      case 10:
-        message = .authenticationSasl(
-          buffer.readNullTerminatedString()!.split(separator: ",").map { String($0) })
-      case 11:
-        message = .authenticationSaslContinue(buffer.readString(length: length - 4)!)
-      case 12:
-        message = .authenticationSaslFinal(buffer.readString(length: length - 4)!)
-      default:
-        message = .unknownAuthentication
-      }
-    case 67:  // 'C'
-      message = .commandComplete(buffer.readNullTerminatedString()!)
-    case 69:  // 'E'
-      message = .errorResponse(decodeServerErrorNoticeMessage(buffer: &buffer))
-    case 90:  // 'Z'
-      message = .readyForQuery(buffer.readInteger(as: UInt8.self)!)
-    case 84:  // 'T'
-      message = .rowDescription(
-        (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-          .init(
-            name: buffer.readNullTerminatedString()!,
-            tableOID: buffer.readInteger(as: Int32.self)!,
-            columnAttr: buffer.readInteger(as: Int16.self)!,
-            dataTypeOID: buffer.readInteger(as: Int32.self)!,
-            dataTypeSize: buffer.readInteger(as: Int16.self)!,
-            typeModifier: buffer.readInteger(as: Int32.self)!,
-            formatCode: buffer.readInteger(as: Int16.self)!
-          )
-        }
-      )
-    case 116:  // 't'
-      message = .parameterDescription(
-        (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-          buffer.readInteger(as: Int32.self)!
-        }
-      )
-    case 68:  // 'D'
-      message = .dataRow(columns: buffer.readInteger(as: Int16.self)!, columnData: buffer)
-    case 49:  // '1'
-      message = .parseComplete
-    case 50:  // '2'
-      message = .bindComplete
-    default:
-      message = .unknown
-    }
-    print("Received message: \(message)")
-    return message
-  }
-
-  private static func decodeServerErrorNoticeMessage(buffer: inout ByteBuffer)
-    -> PostgreSQLErrorNoticeMessage
-  {
-    var errorFields: PostgreSQLErrorNoticeMessage = []
-    while let fieldType = buffer.readInteger(as: UInt8.self), fieldType != 0 {
-      guard let fieldValue = buffer.readNullTerminatedString() else {
-        continue
-      }
-      let field: PostgreSQLErrorNoticeMessageField
-      switch fieldType {
-      case 0x53: field = .severity(fieldValue)  // 'S'
-      case 0x56: field = .severity(fieldValue)  // 'V'
-      case 0x43: field = .code(fieldValue)  // 'C'
-      case 0x4D: field = .message(fieldValue)  // 'M'
-      case 0x44: field = .detail(fieldValue)  // 'D'
-      case 0x48: field = .hint(fieldValue)  // 'H'
-      case 0x50: field = .position(fieldValue)  // 'P'
-      case 0x70: field = .internalPosition(fieldValue)  // 'p'
-      case 0x71: field = .internalQuery(fieldValue)  // 'q'
-      case 0x57: field = .where_(fieldValue)  // 'W'
-      case 0x73: field = .schemaName(fieldValue)  // 's'
-      case 0x74: field = .tableName(fieldValue)  // 't'
-      case 0x63: field = .columnName(fieldValue)  // 'c'
-      case 0x64: field = .dataTypeName(fieldValue)  // 'd'
-      case 0x6E: field = .constraintName(fieldValue)  // 'n'
-      case 0x46: field = .file(fieldValue)  // 'F'
-      case 0x4C: field = .line(fieldValue)  // 'L'
-      case 0x52: field = .routine(fieldValue)  // 'R'
-      default: continue
-      }
-      errorFields.append(field)
-    }
-    return errorFields
-  }
-
-  private final class PostgreSQLMessageHandler: ChannelInboundHandler, Sendable {
-    typealias InboundIn = ByteBuffer
-    typealias OutboundOut = ByteBuffer
-
-    private let onMessage: @Sendable (PostgreSQLBackendMessage?) -> Void
-    private let onClose: @Sendable () -> Void
-    private let onError: @Sendable (Error?) -> Void
-
-    init(
-      onMessage: @Sendable @escaping (PostgreSQLBackendMessage?) -> Void,
-      onClose: @Sendable @escaping () -> Void,
-      onError: @Sendable @escaping (Error?) -> Void
-    ) {
-      self.onMessage = onMessage
-      self.onClose = onClose
-      self.onError = onError
-    }
-
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-      var buffer = unwrapInboundIn(data)
-      while buffer.readableBytes >= 5 {  // Process all complete messages in the buffer
-        guard let messageType = buffer.getInteger(at: buffer.readerIndex, as: UInt8.self),
-          let messageLength = buffer.getInteger(at: buffer.readerIndex + 1, as: Int32.self)
-        else {
-          break
-        }
-        let dataLength = Int(messageLength) - 4  // 4 bytes for the length itself
-        if buffer.readableBytes < 5 + dataLength {  // Not enough data yet
-          break
-        }
-        buffer.moveReaderIndex(forwardBy: 5)  // Consume the message type and length
-        var dataBuffer = buffer.readSlice(length: dataLength)!
-
-        let message = decodeMessage(messageType, dataLength, &dataBuffer)
-        onMessage(message)
-      }
-      onMessage(nil)
-    }
-
-    func errorCaught(context: ChannelHandlerContext, error: Error) {
-      onError(error)
-    }
-
-    func channelInactive(context: ChannelHandlerContext) {
-      onClose()
-    }
-  }
 }
-

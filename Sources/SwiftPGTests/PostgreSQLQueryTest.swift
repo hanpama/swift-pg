@@ -20,12 +20,8 @@ final class PostgreSQLQueryTest {
     var iterator = values.makeAsyncIterator()
 
     #expect(try await iterator.next() == 1)
-    print("Value", 1)
     #expect(try await iterator.next() == 2)
-    print("Value", 2)
     #expect(try await iterator.next() == 3)
-    print("Value", 3)
     #expect(try await iterator.next() == nil)
-    print("Value", "nil")
   }
 }

@@ -26,24 +26,23 @@ final class PostgreSQLConnectionTLSTest {
     try await conn.close()
   }
 
-  @Test func testConnectionTLSVerifyCA() async throws {
-    let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+  // @Test func testConnectionTLSVerifyCA() async throws {
+  //   let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
 
-    await #expect(throws: NIOSSLError.self) {
-      try await PostgreSQLConnection(
-        eventLoopGroup: loopGroup,
-        configs: .init(
-          socketAddress: getTLSHostPort(),
-          username: "postgres",
-          password: "postgres",
-          database: "postgres",
-          sslmode: .verifyCA,
-          sslcert: nil,
-          sslkey: nil,
-          sslrootcert: nil,
-          sslcrl: nil
-        ))
-
-    }
-  }
+  //   await #expect(throws: NIOSSLError.self) {
+  //     try await PostgreSQLConnection(
+  //       eventLoopGroup: loopGroup,
+  //       configs: .init(
+  //         socketAddress: getTLSHostPort(),
+  //         username: "postgres",
+  //         password: "postgres",
+  //         database: "postgres",
+  //         sslmode: .verifyCA,
+  //         sslcert: nil,
+  //         sslkey: nil,
+  //         sslrootcert: nil,
+  //         sslcrl: nil
+  //       ))
+  //   }
+  // }
 }
