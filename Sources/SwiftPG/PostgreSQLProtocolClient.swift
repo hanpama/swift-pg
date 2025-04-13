@@ -253,7 +253,7 @@ private final class PostgreSQLMessageCodec: ByteToMessageDecoder, MessageToByteE
     default:
       message = .unknown
     }
-    print("Received message: \(message)")
+    // print("Received message: \(message)")
     return message
   }
 
