@@ -21,7 +21,7 @@ public final actor PostgreSQLConnectionPool {
 
   func acquire(timeout: Duration? = nil) async throws -> PostgreSQLConnection {
     while let connection = availables.popLast() {
-      if await connection.isClosed() {
+      if connection.isClosed() {
         connections.removeValue(forKey: ObjectIdentifier(connection))
         continue
       }
@@ -49,7 +49,7 @@ public final actor PostgreSQLConnectionPool {
   }
 
   func release(_ connection: PostgreSQLConnection) async {
-    if await connection.isClosed() {
+    if connection.isClosed() {
       connections.removeValue(forKey: ObjectIdentifier(connection))
       return
     }

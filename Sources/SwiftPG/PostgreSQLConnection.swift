@@ -1,10 +1,11 @@
+import AsyncAlgorithms
 import Foundation
 import Logging
 import NIO
 import NIOConcurrencyHelpers
 import NIOSSL
 
-public final actor PostgreSQLConnection {
+public final class PostgreSQLConnection: Sendable {
   private let eventLoopGroup: EventLoopGroup
   private let defaultTimeout: Duration?
   private let protocolClient: PostgreSQLProtocolClient
@@ -21,6 +22,7 @@ public final actor PostgreSQLConnection {
   }
 
   public func close() async throws {
+    currentTask.withLockedValue { $0?.cancel() }
     if !protocolClient.isClosed() {
       try await protocolClient.send(.terminate)
       try await protocolClient.close()
@@ -31,82 +33,123 @@ public final actor PostgreSQLConnection {
     return protocolClient.isClosed()
   }
 
-  public func query(
-    timeout: Duration? = nil, rowBuffer: Int32 = 0, _ sql: String,
-    _ params: [PostgreSQLEncodable] = []
-  ) async throws -> PostgreSQLRows {
-    let opCtx = try makeOpCtx(timeout: timeout)
-    let stmt = try await opCtx.run {
-      let stmt = try await self.parseStmt(name: "", sql: sql)
-      try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: rowBuffer)
-      try await self.sync()
-      return stmt
-    }
-    return PostgreSQLRows(connection: self, stmt: stmt, rowLimit: rowBuffer, opCtx: opCtx)
-  }
-
-  public func execute(timeout: Duration? = nil, _ sql: String, _ params: [PostgreSQLEncodable] = [])
-    async throws
+  public func query(_ sql: String, _ params: [PostgreSQLEncodable] = []) async throws
+    -> PostgreSQLRows
   {
-    let opCtx = try makeOpCtx(timeout: timeout)
-    try await opCtx.run {
-      let stmt = try await self.parseStmt(name: "", sql: sql)
-      try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
-      try await self.sync()
-      try await self.drainUntilReadyForQuery()
-    }
-  }
-
-  public func batchQuery(
-    timeout: Duration? = nil, _ sql: String, _ batches: [[PostgreSQLEncodable]]
-  ) async throws -> PostgreSQLRows {
-    let opCtx = try makeOpCtx(timeout: timeout)
-    let stmt = try await opCtx.run {
-      let stmt = try await self.parseStmt(name: "", sql: sql)
-      for params in batches {
+    let promise = eventLoopGroup.next().makePromise(of: PostgreSQLRows.self)
+    try withinCurrentTask {
+      do {
+        let stmt = try await self.parseStmt(name: "", sql: sql)
         try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
+        try await self.sync()
+        let rows = PostgreSQLRows()
+        promise.succeed(rows)
+        do {
+          while let row = try await self.receiveRow(stmt: stmt, rowLimit: 0) {
+            await rows.channel.send(row)
+          }
+          rows.channel.finish()
+        } catch {
+          rows.channel.fail(error)
+        }
+      } catch {
+        promise.fail(error)
       }
-      try await self.sync()
-      return stmt
     }
-    return PostgreSQLRows(connection: self, stmt: stmt, rowLimit: 0, opCtx: opCtx)
+    return try await promise.futureResult.get()
   }
 
-  public func batchExecute(
-    timeout: Duration? = nil, _ sql: String, _ batches: [[PostgreSQLEncodable]]
-  ) async throws {
-    let opCtx = try makeOpCtx(timeout: timeout)
-    try await opCtx.run {
-      let stmt = try await self.parseStmt(name: "", sql: sql)
-      for params in batches {
+  public func execute(_ sql: String, _ params: [PostgreSQLEncodable] = []) async throws {
+    let promise = eventLoopGroup.next().makePromise(of: Void.self)
+    try withinCurrentTask {
+      do {
+        let stmt = try await self.parseStmt(name: "", sql: sql)
         try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
+        try await self.sync()
+        try await self.drainUntilCommandComplete()
+        promise.succeed(())
+      } catch {
+        promise.fail(error)
       }
-      try await self.sync()
-      try await self.drainUntilReadyForQuery()
     }
+    return try await promise.futureResult.get()
   }
 
-  func receiveRowData(rowLimit: Int32) async throws -> ByteBuffer? {
+  public func batchQuery(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws
+    -> PostgreSQLRows
+  {
+    let promise = eventLoopGroup.next().makePromise(of: PostgreSQLRows.self)
+    try withinCurrentTask {
+      do {
+        let stmt = try await self.parseStmt(name: "", sql: sql)
+        for params in batches {
+          try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
+        }
+        try await self.sync()
+        let rows = PostgreSQLRows()
+        promise.succeed(rows)
+        do {
+          for _ in batches {
+            while let row = try await self.receiveRow(stmt: stmt, rowLimit: 0) {
+              await rows.channel.send(row)
+            }
+          }
+          rows.channel.finish()
+        } catch {
+          rows.channel.fail(error)
+        }
+      } catch {
+        promise.fail(error)
+      }
+    }
+    return try await promise.futureResult.get()
+  }
+
+  public func batchExecute(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws {
+    let promise = eventLoopGroup.next().makePromise(of: Void.self)
+    try withinCurrentTask {
+      do {
+        let stmt = try await self.parseStmt(name: "", sql: sql)
+        for params in batches {
+          try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
+        }
+        try await self.sync()
+        for _ in batches {
+          try await self.drainUntilCommandComplete()
+        }
+        promise.succeed(())
+      } catch {
+        promise.fail(error)
+      }
+    }
+    return try await promise.futureResult.get()
+  }
+
+  func receiveRow(stmt: PostgreSQLStatement, rowLimit: Int32) async throws -> PostgreSQLRow? {
     loop: while true {
       switch try await receive() {
-      case .dataRow(_, let columnData):
-        return columnData
+      case .commandComplete(_):
+        return nil
       case .portalSuspended:
         try await protocolClient.send(.execute("", rowLimit))
-      case .readyForQuery:
-        return nil
       case .errorResponse(let message):
         throw PostgreSQLError.databaseError(message.description)
+      case .dataRow(_, let columnData):
+        return .init(
+          defaultDecoderMap: defaultDecoderMap,
+          fields: stmt.fields,
+          columns: columnData
+        )
       default:
         break
       }
     }
   }
 
-  func drainUntilReadyForQuery() async throws {
+  func drainUntilCommandComplete() async throws {
     loop: while true {
       switch try await receive() {
-      case .readyForQuery:
+      case .commandComplete(_):
         break loop
       case .errorResponse(let fields):
         throw PostgreSQLError.databaseError(fields.description)
@@ -169,62 +212,36 @@ public final actor PostgreSQLConnection {
     case .some(let message):
       return message
     case .none:
-      throw PostgreSQLError.operationTimeout  // TODO: inappropriate error
+      throw PostgreSQLError.clientError("Connection closed")
     }
   }
 
-  private var currentOpCtx: OperationContext? = nil
-
-  private func makeOpCtx(timeout: Duration?) throws -> OperationContext {
-    if let currentOpCtx = currentOpCtx {
-      if !currentOpCtx.isClosed() {
-        throw PostgreSQLError.clientError("Another operation is in progress")
-      }
-    }
-    let opctx = OperationContext(timeout: timeout)
-    currentOpCtx = opctx
-    return opctx
-  }
-}
-
-struct OperationContext: Sendable {
-  private let cancelCurrent: NIOLockedValueBox<(@Sendable () -> Void)?> = .init(nil)
-  private let closeError: NIOLockedValueBox<Error?> = .init(nil)
-  private var timeoutTask: Task<(), any Error>?
-
-  init(timeout: Duration?) {
-    if let timeout = timeout {
-      timeoutTask = Task { [self] in
-        try await Task.sleep(for: timeout)
-        closeError.withLockedValue { $0 = PostgreSQLError.operationTimeout }
-        cancelCurrent.withLockedValue { $0?() }
+  private func readyForQuery() async throws {
+    loop: while true {
+      switch try await receive() {
+      case .readyForQuery:
+        break loop
+      case .errorResponse(let fields):
+        throw PostgreSQLError.databaseError(fields.description)
+      default:
+        break
       }
     }
   }
 
-  func run<T: Sendable>(_ body: @Sendable @escaping () async throws -> T) async throws -> T {
-    if let err = closeError.withLockedValue({ $0 }) {
-      throw err
-    }
-    let task = Task { try await body() }
-    cancelCurrent.withLockedValue { $0 = task.cancel }
-    do {
-      return try await task.value
-    } catch _ as CancellationError {
-      throw closeError.withLockedValue { $0! }
-    } catch {
-      throw error
-    }
-  }
+  private let currentTask: NIOLockedValueBox<Task<Void, Error>?> = .init(nil)
 
-  func close() {
-    closeError.withLockedValue { $0 = PostgreSQLError.operationClosed }
-    cancelCurrent.withLockedValue { $0?() }
-    timeoutTask?.cancel()
-  }
-
-  func isClosed() -> Bool {
-    return closeError.withLockedValue { $0 != nil }
+  private func withinCurrentTask(_ body: @Sendable @escaping () async throws -> Void) throws {
+    try currentTask.withLockedValue({ currentTask in
+      if case .some = currentTask {
+        throw PostgreSQLError.clientError("Operation already in progress")
+      } else {
+        currentTask = Task {
+          defer { self.currentTask.withLockedValue({ $0 = nil }) }
+          try await body()
+        }
+      }
+    })
   }
 }
 
@@ -240,39 +257,18 @@ public struct PostgreSQLStatement: Sendable {
   }
 }
 
-public struct PostgreSQLRows: Sendable, AsyncSequence, AsyncIteratorProtocol {
+public struct PostgreSQLRows: AsyncSequence, Sendable {
   public typealias Element = PostgreSQLRow
-  public typealias AsyncIterator = Self
-
-  public mutating func next() async throws -> PostgreSQLRow? {
-    let data = try await opCtx.run { [self] in
-      try await self.connection.receiveRowData(rowLimit: rowLimit)
-    }
-    if let data = data {
-      return .init(
-        defaultDecoderMap: connection.defaultDecoderMap,
-        fields: stmt.fields,
-        columns: data
-      )
-    } else {
-      opCtx.close()
-      return nil
-    }
-  }
-
-  public mutating func close() async throws {
-    try await connection.drainUntilReadyForQuery()
-    opCtx.close()
-  }
+  public typealias AsyncIterator = AsyncThrowingChannel<Element, Error>.AsyncIterator
+  let channel = AsyncThrowingChannel<PostgreSQLRow, Error>()
 
   public func makeAsyncIterator() -> AsyncIterator {
-    return self
+    return channel.makeAsyncIterator()
   }
 
-  let connection: PostgreSQLConnection
-  let stmt: PostgreSQLStatement
-  let rowLimit: Int32
-  let opCtx: OperationContext
+  public func close() {
+    channel.finish()
+  }
 }
 
 public struct PostgreSQLRow: Sendable {
@@ -312,7 +308,6 @@ public protocol PostgreSQLDecodable: Sendable {
 }
 
 public enum PostgreSQLError: Error, Sendable, Equatable {
-  // case transportError(String)
   case databaseError(String)
   case clientError(String)
   case codecError(String)

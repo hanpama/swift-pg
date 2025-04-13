@@ -7,7 +7,6 @@ public struct PostgreSQLConnectionConfigs: Sendable {
   let username: String
   let password: String
   let database: String
-  // let tls: TLSConfiguration?
   let sslmode: SSLMode
   let sslcert: String?
   let sslkey: String?
@@ -21,8 +20,6 @@ public struct PostgreSQLConnectionConfigs: Sendable {
 
   public enum SSLMode: String, Sendable {
     case disable = "disable"
-    // case allow = "allow"
-    // case prefer = "prefer"
     case require = "require"
     case verifyCA = "verify-ca"
     case verifyFull = "verify-full"

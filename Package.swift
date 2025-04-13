@@ -19,6 +19,7 @@ let package = Package(
     .package(url: "https://github.com/apple/swift-nio-ssl", from: "2.29.3"),
     .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
     .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
+    .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.3"),
   ],
   targets: [
     .target(
@@ -26,6 +27,7 @@ let package = Package(
       dependencies: [
         .product(name: "NIO", package: "swift-nio"),
         .product(name: "NIOSSL", package: "swift-nio-ssl"),
+        .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
         .product(name: "Logging", package: "swift-log"),
         .product(name: "Crypto", package: "swift-crypto"),
       ]

@@ -75,6 +75,16 @@ final class PostgreSQLProtocolClient: Sendable {
     }
 
     channel.read()
+    // let achan = try NIOAsyncChannel<PostgreSQLBackendMessage, PostgreSQLFrontendMessage>(
+    //   wrappingChannelSynchronously: channel
+    // )
+
+    // try await achan.executeThenClose { inbound, outbound in
+      // inbound.
+      // outbound.
+      // inbound.read()
+      // return outbound
+    // }
 
     try await send(.startupMessage(configs.username, configs.database))
 
@@ -83,7 +93,7 @@ final class PostgreSQLProtocolClient: Sendable {
     loop: while true {
       switch try await receive() {
       case .authenticationOk:
-        break
+        break loop
 
       case .authenticationSasl(let mechanisms):
         if mechanisms.contains("SCRAM-SHA-256") || mechanisms.contains("SCRAM-SHA-256-PLUS") {
@@ -119,8 +129,7 @@ final class PostgreSQLProtocolClient: Sendable {
 
       case .errorResponse(let fields):
         throw PostgreSQLError.databaseError(fields.description)
-      case .readyForQuery:
-        break loop
+
       default:
         break
       }
@@ -128,7 +137,7 @@ final class PostgreSQLProtocolClient: Sendable {
   }
 
   func send(_ message: PostgreSQLFrontendMessage) async throws {
-    let buffer: ByteBuffer = encodeMessage(message: message)
+    let buffer: ByteBuffer = Self.encodeMessage(message: message)
     do {
       try await channel.writeAndFlush(buffer)
     } catch {
@@ -158,7 +167,7 @@ final class PostgreSQLProtocolClient: Sendable {
     return nil
   }
 
-  private func encodeMessage(message: PostgreSQLFrontendMessage) -> ByteBuffer {
+  private static func encodeMessage(message: PostgreSQLFrontendMessage) -> ByteBuffer {
     var buffer = ByteBuffer()
 
     switch message {
@@ -440,3 +449,4 @@ final class PostgreSQLProtocolClient: Sendable {
     }
   }
 }
+
