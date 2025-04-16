@@ -12,7 +12,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Run tests
-      run: docker compose run test
+      run: docker compose run --quiet-pull test
     - name: Show logs
       if: failure()
-      run: docker compose logs --tail 100
+      run: docker compose logs

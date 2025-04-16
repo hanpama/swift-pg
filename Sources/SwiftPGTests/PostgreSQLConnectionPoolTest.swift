@@ -6,9 +6,7 @@ import Testing
 
 final class PostgreSQLConnectionPoolTest {
   @Test func testPool() async throws {
-    let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     let pool = PostgreSQLConnectionPool(
-      eventLoopGroup: loopGroup,
       configuration: getSecureConfigs(),
       maxConnections: 3
     )

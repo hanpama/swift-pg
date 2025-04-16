@@ -10,9 +10,9 @@ public final actor PostgreSQLConnectionPool {
   private var waiters: [EventLoopPromise<PostgreSQLConnection>] = []
 
   init(
-    eventLoopGroup: EventLoopGroup,
     configuration: PostgreSQLConnectionConfigs,
-    maxConnections: Int
+    maxConnections: Int,
+    eventLoopGroup: EventLoopGroup = MultiThreadedEventLoopGroup.singleton
   ) {
     self.eventLoopGroup = eventLoopGroup
     self.configuration = configuration
@@ -30,8 +30,8 @@ public final actor PostgreSQLConnectionPool {
 
     if connections.count < maxConnections {
       let connection = try await PostgreSQLConnection(
-        eventLoopGroup: eventLoopGroup,
-        configs: configuration
+        configs: configuration,
+        eventLoopGroup: eventLoopGroup
       )
       connections[ObjectIdentifier(connection)] = connection
       return connection
@@ -59,5 +59,10 @@ public final actor PostgreSQLConnectionPool {
     } else {
       availables.append(connection)
     }
+  }
+
+  struct Waiter {
+  let promise: EventLoopPromise<PostgreSQLConnection>
+    let timeout: Task<Void, Error>?
   }
 }

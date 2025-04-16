@@ -26,6 +26,7 @@ let package = Package(
       name: "SwiftPG",
       dependencies: [
         .product(name: "NIO", package: "swift-nio"),
+        .product(name: "NIOTLS", package: "swift-nio"),
         .product(name: "NIOSSL", package: "swift-nio-ssl"),
         .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
         .product(name: "Logging", package: "swift-log"),

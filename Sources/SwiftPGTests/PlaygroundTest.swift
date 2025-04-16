@@ -2,8 +2,27 @@ import Foundation
 import NIO
 import Testing
 
+@testable import SwiftPG
+
 final class PlaygroundTest {
-  @Test func test() async throws {
+  @Test func testPlaygroundTest() async throws {
+    // let loopGroup1 = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    // let conn1 = try await PostgreSQLConnection(configs: getSecureConfigs())
+
+    // let loopGroup2 = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    // let conn2 = try await PostgreSQLConnection(configs: getSecureConfigs())
+
+    // print(loopGroup1.description)
+    // try await loopGroup1.next().submit {
+    //   print("Hey!")
+    // }.get()
+
+    // for try await row in try await conn2.query("SELECT 1;") {
+    //   let value = try row.decode(Int.self)
+    //   #expect(value == 1)
+    //   print(value)
+    // }
+
     // let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
 
     // let promise = eventLoopGroup.next().makePromise(of: Int.self)

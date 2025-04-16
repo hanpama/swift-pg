@@ -7,9 +7,7 @@ import Testing
 
 final class PostgreSQLConnectionTLSTest {
   @Test func testConnectionTLSRequire() async throws {
-    let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     let conn = try await PostgreSQLConnection(
-      eventLoopGroup: loopGroup,
       configs: .init(
         socketAddress: getTLSHostPort(),
         username: "postgres",
@@ -27,11 +25,8 @@ final class PostgreSQLConnectionTLSTest {
   }
 
   @Test func testConnectionTLSVerifyCA() async throws {
-    let loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-
     await #expect(throws: NIOSSLError.self) {
       try await PostgreSQLConnection(
-        eventLoopGroup: loopGroup,
         configs: .init(
           socketAddress: getTLSHostPort(),
           username: "postgres",

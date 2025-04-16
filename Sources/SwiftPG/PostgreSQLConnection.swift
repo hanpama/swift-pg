@@ -7,17 +7,14 @@ import NIOSSL
 
 public final class PostgreSQLConnection: Sendable {
   private let eventLoopGroup: EventLoopGroup
-  private let defaultTimeout: Duration?
   private let protocolClient: PostgreSQLProtocolClient
   let defaultDecoderMap: [Int32: PostgreSQLDecodable.Type] = DEFAULT_DECODER_MAP
 
   public init(
-    eventLoopGroup: EventLoopGroup,
     configs: PostgreSQLConnectionConfigs,
-    defaultTimeout: Duration? = nil
+    eventLoopGroup: EventLoopGroup = MultiThreadedEventLoopGroup.singleton
   ) async throws {
     self.eventLoopGroup = eventLoopGroup
-    self.defaultTimeout = defaultTimeout
     self.protocolClient = try await PostgreSQLProtocolClient(eventLoopGroup.next(), configs)
   }
 

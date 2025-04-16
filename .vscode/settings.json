@@ -1,0 +1,5 @@
+{
+    "swift.testEnvironmentVariables": {
+        "SWIFTNIO_STRICT": "1"
+    }
+}
