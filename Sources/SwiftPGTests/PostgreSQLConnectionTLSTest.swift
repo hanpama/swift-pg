@@ -7,7 +7,8 @@ import Testing
 
 final class PostgreSQLConnectionTLSTest {
   @Test func testConnectionTLSRequire() async throws {
-    let conn = try await PostgreSQLConnection(
+    let conn = PostgreSQLConnection()
+    try await conn.connect(
       configs: .init(
         socketAddress: getTLSHostPort(),
         username: "postgres",
@@ -26,7 +27,8 @@ final class PostgreSQLConnectionTLSTest {
 
   @Test func testConnectionTLSVerifyCA() async throws {
     await #expect(throws: NIOSSLError.self) {
-      try await PostgreSQLConnection(
+      let conn = PostgreSQLConnection()
+      try await conn.connect(
         configs: .init(
           socketAddress: getTLSHostPort(),
           username: "postgres",

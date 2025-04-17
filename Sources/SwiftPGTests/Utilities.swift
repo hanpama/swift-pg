@@ -43,6 +43,7 @@ func getTLSHostPort() -> PostgreSQLConnectionConfigs.SocketAddress {
 }
 
 func createTestConnection() async throws -> PostgreSQLConnection {
-  let conn = try await PostgreSQLConnection(configs: getSecureConfigs())
+  let conn = PostgreSQLConnection()
+  try await conn.connect(configs: getSecureConfigs())
   return conn
 }

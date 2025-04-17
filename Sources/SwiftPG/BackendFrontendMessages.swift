@@ -55,9 +55,7 @@ enum PostgreSQLBackendMessage: Sendable {
   case portalSuspended
   case readyForQuery(_ transactionStatus: UInt8)
   case rowDescription(_ fields: [PostgreSQLFieldDescription])
-
   case unknown  // Placeholder for unknown message types
-  case unknownAuthentication  // Placeholder for unknown authentication message types
 }
 
 typealias PostgreSQLErrorNoticeMessage = [PostgreSQLErrorNoticeMessageField]

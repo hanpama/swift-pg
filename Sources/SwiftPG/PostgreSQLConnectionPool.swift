@@ -7,7 +7,7 @@ public final actor PostgreSQLConnectionPool {
 
   private var connections: [ObjectIdentifier: PostgreSQLConnection] = [:]
   private var availables: [PostgreSQLConnection] = []
-  private var waiters: [EventLoopPromise<PostgreSQLConnection>] = []
+  private var waiters: [Waiter] = []
 
   init(
     configuration: PostgreSQLConnectionConfigs,
@@ -29,40 +29,111 @@ public final actor PostgreSQLConnectionPool {
     }
 
     if connections.count < maxConnections {
-      let connection = try await PostgreSQLConnection(
-        configs: configuration,
-        eventLoopGroup: eventLoopGroup
-      )
+      let connection = PostgreSQLConnection(eventLoopGroup: eventLoopGroup)
       connections[ObjectIdentifier(connection)] = connection
+      try await connection.connect(configs: configuration)
       return connection
     }
 
-    let promise = eventLoopGroup.next().makePromise(of: PostgreSQLConnection.self)
-    waiters.append(promise)
-    if let timeout = timeout {
-      Task {
-        try await Task.sleep(for: timeout)
-        promise.fail(PostgreSQLError.operationTimeout)
-      }
-    }
-    return try await promise.futureResult.get()
+    let waiter = Waiter(eventLoopGroup.next(), timeout)
+    waiters.append(waiter)
+
+    return try await waiter.get()
   }
 
   func release(_ connection: PostgreSQLConnection) async {
-    if connection.isClosed() {
-      connections.removeValue(forKey: ObjectIdentifier(connection))
-      return
+    let goodConnection: Bool
+    do {
+      try await connection.readyForQuery()
+      goodConnection = true
+    } catch {
+      goodConnection = false
     }
-
-    if let promise = waiters.popLast() {
-      promise.succeed(connection)
+    if goodConnection {
+      if let waiter = waiters.popLast() {
+        waiter.succeed(connection)
+      } else {
+        availables.append(connection)
+      }
     } else {
-      availables.append(connection)
+      if let waiter = waiters.popLast() {
+        do {
+          try await connection.connect(configs: configuration)
+          waiter.succeed(connection)
+        } catch {
+          waiter.fail(error: error)
+        }
+      } else {
+        connection.close()
+        connections.removeValue(forKey: ObjectIdentifier(connection))
+      }
     }
   }
 
-  struct Waiter {
+  public func query(_ sql: String, _ params: [PostgreSQLEncodable] = []) async throws
+    -> PostgreSQLRows
+  {
+    let connection = try await acquire()
+    let rows = try await connection.query(sql, params)
+    Task {
+      try await connection.waitCurrentTask()
+      await release(connection)
+    }
+    return rows
+  }
+
+  public func execute(_ sql: String, _ params: [PostgreSQLEncodable] = []) async throws {
+    let connection = try await acquire()
+    try await connection.execute(sql, params)
+    await release(connection)
+  }
+
+  public func batchQuery(_ sql: String, _ params: [[PostgreSQLEncodable]] = []) async throws
+    -> PostgreSQLRows
+  {
+    let connection = try await acquire()
+    let rows = try await connection.batchQuery(sql, params)
+    Task {
+      try await connection.waitCurrentTask()
+      await release(connection)
+    }
+    return rows
+  }
+}
+
+private final class Waiter: Sendable {
   let promise: EventLoopPromise<PostgreSQLConnection>
-    let timeout: Task<Void, Error>?
+  let timeout: Task<Void, Error>?
+
+  init(_ loop: EventLoop, _ timeout: Duration?) {
+    let promise = loop.makePromise(of: PostgreSQLConnection.self)
+    if let timeout = timeout {
+      self.timeout = Task {
+        try await Task.sleep(for: timeout)
+        promise.fail(PostgreSQLError.operationTimeout)
+      }
+    } else {
+      self.timeout = nil
+    }
+    self.promise = promise
+  }
+
+  func fail(error: Error) {
+    timeout?.cancel()
+    promise.fail(error)
+  }
+
+  func succeed(_ connection: PostgreSQLConnection) {
+    timeout?.cancel()
+    promise.succeed(connection)
+  }
+
+  func get() async throws -> PostgreSQLConnection {
+    do {
+      return try await promise.futureResult.get()
+    } catch {
+      timeout?.cancel()
+      throw error
+    }
   }
 }

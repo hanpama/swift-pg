@@ -3,13 +3,14 @@ import NIO
 import NIOSSL
 import NIOTLS
 
-final class PostgreSQLProtocolClient: Sendable {
+struct PostgreSQLProtocolClient: Sendable {
   private let channel: Channel
-  private let messageStream: AsyncThrowingChannel<PostgreSQLBackendMessage?, Error>
-  private let outbound: NIOAsyncChannelOutboundWriter<PostgreSQLFrontendMessage>
+  private let outbound: Outbound
+  private let inbound: Inbound
+  private typealias Outbound = NIOAsyncChannelOutboundWriter<PostgreSQLFrontendMessage>
+  private typealias Inbound = AsyncThrowingChannel<PostgreSQLBackendMessage, Error>
 
-  init(_ loop: EventLoop, _ configs: PostgreSQLConnectionConfigs) async throws {
-    let messageStream = AsyncThrowingChannel<PostgreSQLBackendMessage?, Error>()
+  init(eventLoop loop: EventLoop, configs: PostgreSQLConnectionConfigs) async throws {
 
     let socketAddress: SocketAddress =
       switch configs.socketAddress {
@@ -43,30 +44,27 @@ final class PostgreSQLProtocolClient: Sendable {
       )
     }.get()
 
-    let outboundPromise = loop.makePromise(
-      of: NIOAsyncChannelOutboundWriter<PostgreSQLFrontendMessage>.self)
+    let messages = AsyncThrowingChannel<PostgreSQLBackendMessage, Error>()
+    let outboundPromise = loop.makePromise(of: Outbound.self)
 
     Task {
       do {
         try await asyncChannel.executeThenClose { inbound, outbound in
           outboundPromise.succeed(outbound)
           for try await message in inbound {
-            await messageStream.send(message)
+            await messages.send(message)
           }
-          messageStream.finish()
+          messages.finish()
         }
       } catch {
-        messageStream.fail(error)
+        messages.fail(error)
         outboundPromise.fail(error)
       }
     }
 
     self.outbound = try await outboundPromise.futureResult.get()
-    self.messageStream = messageStream
+    self.inbound = messages
     self.channel = channel
-
-    try await send(.startupMessage(configs.username, configs.database))
-    try await authenticate(configs: configs)
   }
 
   func send(_ message: PostgreSQLFrontendMessage) async throws {
@@ -82,10 +80,7 @@ final class PostgreSQLProtocolClient: Sendable {
   }
 
   func receive() async throws -> PostgreSQLBackendMessage? {
-    for try await message in messageStream {
-      return message
-    }
-    return nil
+    return try await inbound.first { _ in true }
   }
 
   private static func getTLSHandler(configs: PostgreSQLConnectionConfigs) throws
@@ -124,55 +119,6 @@ final class PostgreSQLProtocolClient: Sendable {
     return sslHandler
   }
 
-  private func authenticate(configs: PostgreSQLConnectionConfigs) async throws {
-    var scramSha256Authenticator: ScramSha256Authenticator?
-
-    loop: while true {
-      switch try await receive() {
-      case .authenticationOk:
-        break loop
-
-      case .authenticationSasl(let mechanisms):
-        if mechanisms.contains("SCRAM-SHA-256") || mechanisms.contains("SCRAM-SHA-256-PLUS") {
-          scramSha256Authenticator = try ScramSha256Authenticator(
-            username: configs.username, password: configs.password)
-
-          try await send(
-            .saslInitialResponse(
-              mechanism: "SCRAM-SHA-256",
-              initialResponse: scramSha256Authenticator!.formatClientFirstMessage()
-            )
-          )
-        } else {
-          throw PostgreSQLError.clientError(
-            "No supported SASL mechanism found. Supported: \(mechanisms)")
-        }
-
-      case .authenticationSaslContinue(let challenge):
-        guard let scramSha256Authenticator = scramSha256Authenticator else {
-          throw PostgreSQLError.clientError("Unexpected SASL continue message")
-        }
-        try scramSha256Authenticator.handleServerFirstMessage(challenge)
-
-        try await send(
-          .saslResponse(scramSha256Authenticator.formatClientFinalMessage())
-        )
-
-      case .authenticationSaslFinal(let finalMessage):
-        guard let scramSha256Authenticator = scramSha256Authenticator else {
-          throw PostgreSQLError.clientError("Unexpected SASL final message")
-        }
-        try scramSha256Authenticator.handleServerFinalMessage(finalMessage)
-
-      case .errorResponse(let fields):
-        throw PostgreSQLError.databaseError(fields.description)
-
-      default:
-        break
-      }
-    }
-  }
-
   private final class PostgreSQLMessageCodec: ByteToMessageDecoder, MessageToByteEncoder, Sendable {
     typealias OutboundIn = PostgreSQLFrontendMessage
     typealias InboundOut = PostgreSQLBackendMessage
@@ -196,12 +142,12 @@ final class PostgreSQLProtocolClient: Sendable {
 
       buffer.moveReaderIndex(forwardBy: 5)  // Move past the message type and length
       var dataBuffer = buffer.readSlice(length: dataLength)!
-      let message = Self.decodeMessage(messageType, dataLength, &dataBuffer)
+      let message = try Self.decodeMessage(messageType, &dataBuffer)
       context.fireChannelRead(wrapInboundOut(message))
       return .continue
     }
 
-    private static func decodeMessage(_ type: UInt8, _ length: Int, _ buffer: inout ByteBuffer)
+    private static func decodeMessage(_ type: UInt8, _ buffer: inout ByteBuffer) throws
       -> PostgreSQLBackendMessage
     {
       let message: PostgreSQLBackendMessage
@@ -213,20 +159,104 @@ final class PostgreSQLProtocolClient: Sendable {
         switch authMessageType {
         case 0:
           message = .authenticationOk
+        case 2:
+          message = .authenticationKerberosV5
+        case 3:
+          message = .authenticationCleartextPassword
+        case 5:
+          let salt = buffer.readBytes(length: 4)!
+          message = .authenticationMD5Password(salt)
+        case 7:
+          message = .authenticationGSS
+        case 8:
+          message = .authenticationGSSContinue
+        case 9:
+          message = .authenticationSSPI
         case 10:
           message = .authenticationSasl(
             buffer.readNullTerminatedString()!.split(separator: ",").map { String($0) })
         case 11:
-          message = .authenticationSaslContinue(buffer.readString(length: length - 4)!)
+          message = .authenticationSaslContinue(buffer.readString(length: buffer.readableBytes)!)
         case 12:
-          message = .authenticationSaslFinal(buffer.readString(length: length - 4)!)
+          message = .authenticationSaslFinal(buffer.readString(length: buffer.readableBytes)!)
         default:
-          message = .unknownAuthentication
+          throw PostgreSQLError.clientError(
+            "Unknown authentication message type: \(authMessageType)"
+          )
         }
+      case 75:  // 'K'
+        let processID = buffer.readInteger(as: Int32.self)!
+        let secretKey = buffer.readInteger(as: Int32.self)!
+        message = .backendKeyData(processID, secretKey)
+      case 50:  // '2'
+        message = .bindComplete
+      case 51:  // '3'
+        message = .closeComplete
       case 67:  // 'C'
         message = .commandComplete(buffer.readNullTerminatedString()!)
+      case 100:  // 'd'
+        message = .copyData(buffer.readBytes(length: buffer.readableBytes)!)
+      case 99:  // 'c'
+        message = .copyDone
+      case 71:  // 'G'
+        message = .copyInResponse(
+          buffer.readInteger(as: Int8.self)!,
+          (0..<buffer.readInteger(as: Int16.self)!).map { _ in
+            buffer.readInteger(as: Int16.self)!
+          }
+        )
+      case 72:  // 'H'
+        message = .copyOutResponse(
+          buffer.readInteger(as: Int8.self)!,
+          (0..<buffer.readInteger(as: Int16.self)!).map { _ in
+            buffer.readInteger(as: Int16.self)!
+          }
+        )
+      case 87:  // 'W'
+        message = .copyBothResponse(
+          buffer.readInteger(as: Int8.self)!,
+          (0..<buffer.readInteger(as: Int16.self)!).map { _ in
+            buffer.readInteger(as: Int16.self)!
+          }
+        )
+      case 68:  // 'D'
+        message = .dataRow(columns: buffer.readInteger(as: Int16.self)!, columnData: buffer)
+      case 73:  // 'I'
+        message = .emptyQueryResponse
       case 69:  // 'E'
         message = .errorResponse(decodeServerErrorNoticeMessage(buffer: &buffer))
+      case 86:  // 'V'
+        message = .functionCallResponse(buffer.readBytes(length: buffer.readableBytes)!)
+      case 118:  // 'v'
+        message = .negotiateProtocolVersion(
+          buffer.readInteger(as: Int32.self)!,
+          (0..<buffer.readInteger(as: Int16.self)!).map { _ in
+            buffer.readNullTerminatedString()!
+          }
+        )
+      case 110:  // 'n'
+        message = .noData
+      case 78:  // 'N'
+        message = .noticeResponse(decodeServerErrorNoticeMessage(buffer: &buffer))
+      case 65:  // 'A'
+        let processID = buffer.readInteger(as: Int32.self)!
+        let channel = buffer.readNullTerminatedString()!
+        let payload = buffer.readNullTerminatedString()!
+        message = .notificationResponse(processID, channel, payload)
+      case 116:  // 't'
+        message = .parameterDescription(
+          (0..<buffer.readInteger(as: Int16.self)!).map { _ in
+            buffer.readInteger(as: Int32.self)!
+          }
+        )
+      case 83:  // 'S'
+        let parameter = buffer.readNullTerminatedString()!
+        let value = buffer.readNullTerminatedString()!
+        message = .parameterStatus(parameter, value)
+      case 49:  // '1'
+        message = .parseComplete
+      case 115:  // 's'
+        message = .portalSuspended
       case 90:  // 'Z'
         message = .readyForQuery(buffer.readInteger(as: UInt8.self)!)
       case 84:  // 'T'
@@ -243,18 +273,6 @@ final class PostgreSQLProtocolClient: Sendable {
             )
           }
         )
-      case 116:  // 't'
-        message = .parameterDescription(
-          (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-            buffer.readInteger(as: Int32.self)!
-          }
-        )
-      case 68:  // 'D'
-        message = .dataRow(columns: buffer.readInteger(as: Int16.self)!, columnData: buffer)
-      case 49:  // '1'
-        message = .parseComplete
-      case 50:  // '2'
-        message = .bindComplete
       default:
         message = .unknown
       }
@@ -272,24 +290,24 @@ final class PostgreSQLProtocolClient: Sendable {
         }
         let field: PostgreSQLErrorNoticeMessageField
         switch fieldType {
-        case 0x53: field = .severity(fieldValue)  // 'S'
-        case 0x56: field = .severity(fieldValue)  // 'V'
-        case 0x43: field = .code(fieldValue)  // 'C'
-        case 0x4D: field = .message(fieldValue)  // 'M'
-        case 0x44: field = .detail(fieldValue)  // 'D'
-        case 0x48: field = .hint(fieldValue)  // 'H'
-        case 0x50: field = .position(fieldValue)  // 'P'
-        case 0x70: field = .internalPosition(fieldValue)  // 'p'
-        case 0x71: field = .internalQuery(fieldValue)  // 'q'
-        case 0x57: field = .where_(fieldValue)  // 'W'
-        case 0x73: field = .schemaName(fieldValue)  // 's'
-        case 0x74: field = .tableName(fieldValue)  // 't'
-        case 0x63: field = .columnName(fieldValue)  // 'c'
-        case 0x64: field = .dataTypeName(fieldValue)  // 'd'
-        case 0x6E: field = .constraintName(fieldValue)  // 'n'
-        case 0x46: field = .file(fieldValue)  // 'F'
-        case 0x4C: field = .line(fieldValue)  // 'L'
-        case 0x52: field = .routine(fieldValue)  // 'R'
+        case 83: field = .severity(fieldValue)  // 'S'
+        case 86: field = .severity(fieldValue)  // 'V'
+        case 67: field = .code(fieldValue)  // 'C'
+        case 77: field = .message(fieldValue)  // 'M'
+        case 68: field = .detail(fieldValue)  // 'D'
+        case 72: field = .hint(fieldValue)  // 'H'
+        case 80: field = .position(fieldValue)  // 'P'
+        case 112: field = .internalPosition(fieldValue)  // 'p'
+        case 113: field = .internalQuery(fieldValue)  // 'q'
+        case 87: field = .where_(fieldValue)  // 'W'
+        case 115: field = .schemaName(fieldValue)  // 's'
+        case 116: field = .tableName(fieldValue)  // 't'
+        case 99: field = .columnName(fieldValue)  // 'c'
+        case 100: field = .dataTypeName(fieldValue)  // 'd'
+        case 110: field = .constraintName(fieldValue)  // 'n'
+        case 70: field = .file(fieldValue)  // 'F'
+        case 76: field = .line(fieldValue)  // 'L'
+        case 82: field = .routine(fieldValue)  // 'R'
         default: continue
         }
         errorFields.append(field)

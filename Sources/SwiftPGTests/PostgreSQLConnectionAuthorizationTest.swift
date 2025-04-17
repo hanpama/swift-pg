@@ -7,13 +7,15 @@ import Testing
 
 final class PostgreSQLConnectionAuthorizationTest {
   @Test func testConnectionTrust() async throws {
-    let conn = try await PostgreSQLConnection(configs: getInsecureConfigs())
+    let conn = PostgreSQLConnection()
+    try await conn.connect(configs: getInsecureConfigs())
     try await conn.execute("SELECT VERSION();")
     // try await conn.close()
   }
 
   @Test func testConnectionSasl() async throws {
-    let conn = try await PostgreSQLConnection(configs: getSecureConfigs())
+    let conn = PostgreSQLConnection()
+    try await conn.connect(configs: getInsecureConfigs())
 
     try await conn.execute("SELECT VERSION();")
     // try await conn.close()

@@ -7,27 +7,39 @@ import NIOSSL
 
 public final class PostgreSQLConnection: Sendable {
   private let eventLoopGroup: EventLoopGroup
-  private let protocolClient: PostgreSQLProtocolClient
+  private let protocolClientBox: NIOLockedValueBox<PostgreSQLProtocolClient?>
   let defaultDecoderMap: [Int32: PostgreSQLDecodable.Type] = DEFAULT_DECODER_MAP
 
-  public init(
-    configs: PostgreSQLConnectionConfigs,
-    eventLoopGroup: EventLoopGroup = MultiThreadedEventLoopGroup.singleton
-  ) async throws {
+  public init(eventLoopGroup: EventLoopGroup = MultiThreadedEventLoopGroup.singleton) {
     self.eventLoopGroup = eventLoopGroup
-    self.protocolClient = try await PostgreSQLProtocolClient(eventLoopGroup.next(), configs)
+    self.protocolClientBox = .init(nil)
   }
 
-  public func close() async throws {
+  public func connect(configs: PostgreSQLConnectionConfigs) async throws {
+    let protocolClient = try await PostgreSQLProtocolClient(
+      eventLoop: eventLoopGroup.next(),
+      configs: configs
+    )
+    protocolClientBox.withLockedValue { $0 = protocolClient }
+    try await send(.startupMessage(configs.username, configs.database))
+    try await authenticate(username: configs.username, password: configs.password)
+  }
+
+  public func close() {
     currentTask.withLockedValue { $0?.cancel() }
-    if !protocolClient.isClosed() {
-      try await protocolClient.send(.terminate)
-      try await protocolClient.close()
+    if let protocolClient = try? getProtocolClient() {
+      Task {
+        try await send(.terminate)
+        try await protocolClient.close()
+      }
     }
   }
 
   public func isClosed() -> Bool {
-    return protocolClient.isClosed()
+    if let protocolClient = try? getProtocolClient() {
+      return protocolClient.isClosed()
+    }
+    return true
   }
 
   public func query(_ sql: String, _ params: [PostgreSQLEncodable] = []) async throws
@@ -128,7 +140,7 @@ public final class PostgreSQLConnection: Sendable {
       case .commandComplete(_):
         return nil
       case .portalSuspended:
-        try await protocolClient.send(.execute("", rowLimit))
+        try await send(.execute("", rowLimit))
       case .errorResponse(let message):
         throw PostgreSQLError.databaseError(message.description)
       case .dataRow(_, let columnData):
@@ -143,7 +155,7 @@ public final class PostgreSQLConnection: Sendable {
     }
   }
 
-  func drainUntilCommandComplete() async throws {
+  private func drainUntilCommandComplete() async throws {
     loop: while true {
       switch try await receive() {
       case .commandComplete(_):
@@ -157,9 +169,9 @@ public final class PostgreSQLConnection: Sendable {
   }
 
   private func parseStmt(name: String, sql: String) async throws -> PostgreSQLStatement {
-    try await protocolClient.send(.parse(name, sql))
-    try await protocolClient.send(.describe(variant: 83, name))
-    try await protocolClient.send(.flush)
+    try await send(.parse(name, sql))
+    try await send(.describe(variant: 83, name))
+    try await send(.flush)
 
     var fields: [PostgreSQLFieldDescription]?
     var parameterOids: [Int32]?
@@ -188,7 +200,7 @@ public final class PostgreSQLConnection: Sendable {
     for (oid, param) in zip(stmt.parameterOids, params) {
       try param.encode(typeOid: oid, buffer: &paramsBuffer)
     }
-    try await protocolClient.send(
+    try await send(
       .bind(
         portalName: portalName,
         statementName: stmt.name,
@@ -197,15 +209,78 @@ public final class PostgreSQLConnection: Sendable {
         parameterValues: paramsBuffer,
         resultColumnFormatCodes: [Int16](repeating: 1, count: stmt.fields.count)
       ))
-    try await protocolClient.send(.execute(portalName, rowLimit))
+    try await send(.execute(portalName, rowLimit))
   }
 
   private func sync() async throws {
-    try await protocolClient.send(.sync)
+    try await send(.sync)
+  }
+
+  func readyForQuery() async throws {
+    loop: while true {
+      let message = try await receive()
+      switch message {
+      case .readyForQuery:
+        break loop
+      case .errorResponse(let fields):
+        throw PostgreSQLError.databaseError(fields.description)
+      case .noticeResponse(_), .notificationResponse(_, _, _):
+        break
+      default:
+        throw PostgreSQLError.clientError("Unexpected message: \(message)")
+      }
+    }
+  }
+
+  private func authenticate(username: String, password: String) async throws {
+    var scramSha256Authenticator: ScramSha256Authenticator?
+
+    loop: while true {
+      switch try await receive() {
+      case .authenticationOk:
+        break loop
+
+      case .authenticationSasl(let mechanisms):
+        if mechanisms.contains("SCRAM-SHA-256") || mechanisms.contains("SCRAM-SHA-256-PLUS") {
+          scramSha256Authenticator = try ScramSha256Authenticator(
+            username: username, password: password)
+
+          try await send(
+            .saslInitialResponse(
+              mechanism: "SCRAM-SHA-256",
+              initialResponse: scramSha256Authenticator!.formatClientFirstMessage()
+            )
+          )
+        } else {
+          throw PostgreSQLError.clientError(
+            "No supported SASL mechanism found. Supported: \(mechanisms)")
+        }
+
+      case .authenticationSaslContinue(let challenge):
+        try scramSha256Authenticator!.handleServerFirstMessage(challenge)
+
+        try await send(
+          .saslResponse(scramSha256Authenticator!.formatClientFinalMessage())
+        )
+
+      case .authenticationSaslFinal(let finalMessage):
+        try scramSha256Authenticator!.handleServerFinalMessage(finalMessage)
+
+      case .errorResponse(let fields):
+        throw PostgreSQLError.databaseError(fields.description)
+
+      default:
+        break
+      }
+    }
+  }
+
+  private func send(_ message: PostgreSQLFrontendMessage) async throws {
+    try await getProtocolClient().send(message)
   }
 
   private func receive() async throws -> PostgreSQLBackendMessage {
-    switch try await protocolClient.receive() {
+    switch try await getProtocolClient().receive() {
     case .some(let message):
       return message
     case .none:
@@ -213,17 +288,12 @@ public final class PostgreSQLConnection: Sendable {
     }
   }
 
-  private func readyForQuery() async throws {
-    loop: while true {
-      switch try await receive() {
-      case .readyForQuery:
-        break loop
-      case .errorResponse(let fields):
-        throw PostgreSQLError.databaseError(fields.description)
-      default:
-        break
-      }
+  private func getProtocolClient() throws -> PostgreSQLProtocolClient {
+    let protocolClient = protocolClientBox.withLockedValue { $0 }
+    guard let protocolClient = protocolClient else {
+      throw PostgreSQLError.clientError("Connection not established")
     }
+    return protocolClient
   }
 
   private let currentTask: NIOLockedValueBox<Task<Void, Error>?> = .init(nil)
@@ -239,6 +309,14 @@ public final class PostgreSQLConnection: Sendable {
         }
       }
     })
+  }
+
+  func waitCurrentTask() async throws {
+    if let task = currentTask.withLockedValue({ $0 }) {
+      try await task.result.get()
+    } else {
+      throw PostgreSQLError.clientError("No current task")
+    }
   }
 }
 
