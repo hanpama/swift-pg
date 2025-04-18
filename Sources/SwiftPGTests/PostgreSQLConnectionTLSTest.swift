@@ -10,7 +10,7 @@ final class PostgreSQLConnectionTLSTest {
     let conn = PostgreSQLConnection()
     try await conn.connect(
       configs: .init(
-        socketAddress: getTLSHostPort(),
+        socketAddress: getTlsSaslHostPort(),
         username: "postgres",
         password: "postgres",
         database: "postgres",
@@ -22,7 +22,7 @@ final class PostgreSQLConnectionTLSTest {
       ))
 
     try await conn.execute("SELECT VERSION();")
-    try await conn.close()
+    conn.close()
   }
 
   @Test func testConnectionTLSVerifyCA() async throws {
@@ -30,7 +30,7 @@ final class PostgreSQLConnectionTLSTest {
       let conn = PostgreSQLConnection()
       try await conn.connect(
         configs: .init(
-          socketAddress: getTLSHostPort(),
+          socketAddress: getTlsSaslHostPort(),
           username: "postgres",
           password: "postgres",
           database: "postgres",

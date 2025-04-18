@@ -47,6 +47,7 @@ public final actor PostgreSQLConnectionPool {
       try await connection.readyForQuery()
       goodConnection = true
     } catch {
+      // print("Connection is closed: \(error)")
       goodConnection = false
     }
     if goodConnection {

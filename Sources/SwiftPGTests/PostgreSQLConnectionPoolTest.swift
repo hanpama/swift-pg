@@ -8,7 +8,7 @@ import Testing
 final class PostgreSQLConnectionPoolTest {
   @Test func testPool() async throws {
     let pool = PostgreSQLConnectionPool(
-      configuration: getSecureConfigs(),
+      configuration: getPlainSaslConnectionConfigs(),
       maxConnections: 3
     )
 
@@ -32,7 +32,7 @@ final class PostgreSQLConnectionPoolTest {
 
   @Test func testConcurrentQuery() async throws {
     let pool = PostgreSQLConnectionPool(
-      configuration: getSecureConfigs(),
+      configuration: getPlainSaslConnectionConfigs(),
       maxConnections: 3
     )
 

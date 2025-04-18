@@ -23,6 +23,19 @@ public final class PostgreSQLConnection: Sendable {
     protocolClientBox.withLockedValue { $0 = protocolClient }
     try await send(.startupMessage(configs.username, configs.database))
     try await authenticate(username: configs.username, password: configs.password)
+    loop: while true {
+      let message = try await receive()
+      switch message {
+      case .backendKeyData(_, _):
+        break loop
+      case .errorResponse(let fields):
+        throw PostgreSQLError.databaseError(fields.description)
+      case .noticeResponse(_), .notificationResponse(_, _, _), .parameterStatus(_, _):
+        break
+      default:
+        throw DriverError("Unexpected message: \(message)")
+      }
+    }
   }
 
   public func close() {
@@ -33,6 +46,13 @@ public final class PostgreSQLConnection: Sendable {
         try await protocolClient.close()
       }
     }
+  }
+
+  public func isConnected() -> Bool {
+    if let protocolClient = try? getProtocolClient() {
+      return protocolClient.isConnected()
+    }
+    return false
   }
 
   public func isClosed() -> Bool {
@@ -146,7 +166,7 @@ public final class PostgreSQLConnection: Sendable {
       case .dataRow(_, let columnData):
         return .init(
           defaultDecoderMap: defaultDecoderMap,
-          fields: stmt.fields,
+          fieldOids: stmt.fields.map { $0.dataTypeOID },
           columns: columnData
         )
       default:
@@ -227,7 +247,7 @@ public final class PostgreSQLConnection: Sendable {
       case .noticeResponse(_), .notificationResponse(_, _, _):
         break
       default:
-        throw PostgreSQLError.clientError("Unexpected message: \(message)")
+        throw DriverError("Unexpected message: \(message)")
       }
     }
   }
@@ -252,8 +272,7 @@ public final class PostgreSQLConnection: Sendable {
             )
           )
         } else {
-          throw PostgreSQLError.clientError(
-            "No supported SASL mechanism found. Supported: \(mechanisms)")
+          throw DriverError("No supported SASL mechanism found. Supported: \(mechanisms)")
         }
 
       case .authenticationSaslContinue(let challenge):
@@ -282,6 +301,7 @@ public final class PostgreSQLConnection: Sendable {
   private func receive() async throws -> PostgreSQLBackendMessage {
     switch try await getProtocolClient().receive() {
     case .some(let message):
+      // print("Received message: \(message)")
       return message
     case .none:
       throw PostgreSQLError.clientError("Connection closed")
@@ -348,7 +368,7 @@ public struct PostgreSQLRows: AsyncSequence, Sendable {
 
 public struct PostgreSQLRow: Sendable {
   let defaultDecoderMap: [Int32: PostgreSQLDecodable.Type]
-  let fields: [PostgreSQLFieldDescription]
+  let fieldOids: [Int32]
   let columns: ByteBuffer
 
   public func decode<each V>(_ types: (repeat each V).Type) throws -> (repeat each V) {
@@ -357,8 +377,8 @@ public struct PostgreSQLRow: Sendable {
 
   public func decode<each V>() throws -> (repeat each V) {
     var buffer = columns
-    var fieldsIterator: IndexingIterator<[PostgreSQLFieldDescription]> = fields.makeIterator()
-    return (repeat try get((each V).self, fieldsIterator.next()!.dataTypeOID, &buffer))
+    var fieldsIterator: IndexingIterator<[Int32]> = fieldOids.makeIterator()
+    return (repeat try get((each V).self, fieldsIterator.next()!, &buffer))
   }
 
   private func get<T>(_ type: T.Type, _ oid: Int32, _ buf: inout ByteBuffer) throws -> T {
@@ -370,7 +390,7 @@ public struct PostgreSQLRow: Sendable {
         return try type.init(pgTypeOid: oid, buffer: &buf) as! T
       }
     }
-    throw PostgreSQLError.codecError("Cannot decode \(type)")
+    throw ClientError.codecError("Cannot decode \(type)")
   }
 }
 
@@ -380,12 +400,4 @@ public protocol PostgreSQLEncodable: Sendable {
 
 public protocol PostgreSQLDecodable: Sendable {
   init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws
-}
-
-public enum PostgreSQLError: Error, Sendable, Equatable {
-  case databaseError(String)
-  case clientError(String)
-  case codecError(String)
-  case operationTimeout
-  case operationClosed
 }

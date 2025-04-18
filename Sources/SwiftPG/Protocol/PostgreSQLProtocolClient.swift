@@ -16,25 +16,31 @@ struct PostgreSQLProtocolClient: Sendable {
       switch configs.socketAddress {
       case .hostPort(let host, let port):
         try .makeAddressResolvingHost(host, port: port)
-      case .unixDomainSocket(let path):
-        try .init(unixDomainSocketPath: path)
+      case .unixDomainSocket(let directory, let port):
+        try .init(unixDomainSocketPath: "\(directory)/.s.PGSQL.\(port)")
       }
 
+    let channel: any Channel
     let channelReady = loop.makePromise(of: Void.self)
-    let messageCodec = PostgreSQLMessageCodec()
-    var handlers: [ChannelHandler] = [
-      ByteToMessageHandler(messageCodec),
-      MessageToByteHandler(messageCodec),
-      ReadyForStartupHandler(promise: channelReady, tls: configs.sslmode != .disable),
-    ]
-    let sslHandler = try Self.getTLSHandler(configs: configs)
-    if let sslHandler = sslHandler {
-      handlers.insert(sslHandler, at: 0)
-    }
+    do {
+      let messageCodec = PostgreSQLMessageCodec()
+      var handlers: [ChannelHandler] = [
+        ByteToMessageHandler(messageCodec),
+        MessageToByteHandler(messageCodec),
+        ReadyForStartupHandler(promise: channelReady, tls: configs.sslmode != .disable),
+      ]
+      let sslHandler = try Self.getTLSHandler(configs: configs)
+      if let sslHandler = sslHandler {
+        handlers.insert(sslHandler, at: 0)
+      }
 
-    let channel = try await ClientBootstrap(group: loop)
-      .channelInitializer { $0.pipeline.addHandlers(handlers) }
-      .connect(to: socketAddress).get()
+      channel = try await ClientBootstrap(group: loop)
+        .channelInitializer { $0.pipeline.addHandlers(handlers) }
+        .connect(to: socketAddress).get()
+    } catch {
+      channelReady.fail(error)
+      throw error
+    }
 
     try await channelReady.futureResult.get()
 
@@ -73,6 +79,10 @@ struct PostgreSQLProtocolClient: Sendable {
 
   func close() async throws {
     try await channel.close()
+  }
+
+  func isConnected() -> Bool {
+    return channel.isActive
   }
 
   func isClosed() -> Bool {

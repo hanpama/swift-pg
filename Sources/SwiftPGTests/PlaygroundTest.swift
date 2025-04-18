@@ -6,6 +6,7 @@ import Testing
 
 final class PlaygroundTest {
   @Test func testPlaygroundTest() async throws {
+
     // let loopGroup1 = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     // let conn1 = try await PostgreSQLConnection(configs: getSecureConfigs())
 

@@ -15,18 +15,18 @@ extension Bool: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       buffer.writeInteger(Self.pgDataLength, as: Int32.self)
       buffer.writeInteger(self ? 1 : 0, as: UInt8.self)
     } else {
-      throw PostgreSQLError.codecError("Cannot encode Bool as \(typeOid)")
+      throw ClientError.codecError("Cannot encode Bool as \(typeOid)")
     }
   }
 
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     if pgTypeOid == 16 {
       guard Self.pgDataLength == buffer.readInteger(as: Int32.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Bool")
+        throw ClientError.codecError("Invalid data for Bool")
       }
       self = buffer.readInteger(as: UInt8.self) == 1
     } else {
-      throw PostgreSQLError.codecError("Cannot decode Bool from \(pgTypeOid)")
+      throw ClientError.codecError("Cannot decode Bool from \(pgTypeOid)")
     }
   }
 
@@ -34,7 +34,7 @@ extension Bool: PostgreSQLCodable, PostgreSQLCodableArrayElement {
     if pgArrayTypeOid == 1000 {
       return 16
     }
-    throw PostgreSQLError.codecError("Cannot get Bool element type oid from \(pgArrayTypeOid)")
+    throw ClientError.codecError("Cannot get Bool element type oid from \(pgArrayTypeOid)")
   }
 }
 
@@ -46,21 +46,21 @@ extension Int16: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       buffer.writeInteger(Self.pgDataLength, as: Int32.self)
       buffer.writeInteger(self, as: Int16.self)
     } else {
-      throw PostgreSQLError.codecError("Cannot encode Int16 as \(typeOid)")
+      throw ClientError.codecError("Cannot encode Int16 as \(typeOid)")
     }
   }
 
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     if pgTypeOid == 21 {
       guard Self.pgDataLength == buffer.readInteger(as: Int32.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Int16")
+        throw ClientError.codecError("Invalid data for Int16")
       }
       guard let value = buffer.readInteger(as: Int16.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Int16")
+        throw ClientError.codecError("Invalid data for Int16")
       }
       self = value
     } else {
-      throw PostgreSQLError.codecError("Cannot decode Int16 from \(pgTypeOid)")
+      throw ClientError.codecError("Cannot decode Int16 from \(pgTypeOid)")
     }
   }
 
@@ -68,7 +68,7 @@ extension Int16: PostgreSQLCodable, PostgreSQLCodableArrayElement {
     if pgArrayTypeOid == 1005 {
       return 21
     }
-    throw PostgreSQLError.codecError("Cannot get Int16 element type oid from \(pgArrayTypeOid)")
+    throw ClientError.codecError("Cannot get Int16 element type oid from \(pgArrayTypeOid)")
   }
 }
 
@@ -80,21 +80,21 @@ extension Int32: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       buffer.writeInteger(Self.pgDataLength, as: Int32.self)
       buffer.writeInteger(self, as: Int32.self)
     } else {
-      throw PostgreSQLError.codecError("Cannot encode Int32 as \(typeOid)")
+      throw ClientError.codecError("Cannot encode Int32 as \(typeOid)")
     }
   }
 
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     if pgTypeOid == 23 {
       guard Self.pgDataLength == buffer.readInteger(as: Int32.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Int32")
+        throw ClientError.codecError("Invalid data for Int32")
       }
       guard let value = buffer.readInteger(as: Int32.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Int32")
+        throw ClientError.codecError("Invalid data for Int32")
       }
       self = value
     } else {
-      throw PostgreSQLError.codecError("Cannot decode Int32 from \(pgTypeOid)")
+      throw ClientError.codecError("Cannot decode Int32 from \(pgTypeOid)")
     }
   }
 
@@ -102,7 +102,7 @@ extension Int32: PostgreSQLCodable, PostgreSQLCodableArrayElement {
     if pgArrayTypeOid == 1007 {
       return 23
     }
-    throw PostgreSQLError.codecError("Cannot get Int32 element type oid from \(pgArrayTypeOid)")
+    throw ClientError.codecError("Cannot get Int32 element type oid from \(pgArrayTypeOid)")
   }
 }
 
@@ -114,21 +114,21 @@ extension Int64: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       buffer.writeInteger(Self.pgDataLength, as: Int32.self)
       buffer.writeInteger(self, as: Int64.self)
     } else {
-      throw PostgreSQLError.codecError("Cannot encode Int64 as \(typeOid)")
+      throw ClientError.codecError("Cannot encode Int64 as \(typeOid)")
     }
   }
 
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     if pgTypeOid == 20 {
       guard Self.pgDataLength == buffer.readInteger(as: Int32.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Int64")
+        throw ClientError.codecError("Invalid data for Int64")
       }
       guard let value = buffer.readInteger(as: Int64.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Int64")
+        throw ClientError.codecError("Invalid data for Int64")
       }
       self = value
     } else {
-      throw PostgreSQLError.codecError("Cannot decode Int64 from \(pgTypeOid)")
+      throw ClientError.codecError("Cannot decode Int64 from \(pgTypeOid)")
     }
   }
 
@@ -136,7 +136,7 @@ extension Int64: PostgreSQLCodable, PostgreSQLCodableArrayElement {
     if pgArrayTypeOid == 1016 {
       return 20
     }
-    throw PostgreSQLError.codecError("Cannot get Int64 element type oid from \(pgArrayTypeOid)")
+    throw ClientError.codecError("Cannot get Int64 element type oid from \(pgArrayTypeOid)")
   }
 }
 
@@ -146,31 +146,31 @@ extension Int: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       try Int64(self).encode(typeOid: 20, buffer: &buffer)
     } else if typeOid == 23 {
       guard self >= Int32.min && self <= Int32.max else {
-        throw PostgreSQLError.codecError("Integer \(self) out of bounds for int4")
+        throw ClientError.codecError("Integer \(self) out of bounds for int4")
       }
       try Int32(self).encode(typeOid: 23, buffer: &buffer)
     } else {
-      throw PostgreSQLError.codecError("Cannot encode Int as \(typeOid)")
+      throw ClientError.codecError("Cannot encode Int as \(typeOid)")
     }
   }
 
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     if pgTypeOid == 20 {
       guard let length = buffer.readInteger(as: Int32.self), length == 8 else {
-        throw PostgreSQLError.codecError("Invalid data for Int")
+        throw ClientError.codecError("Invalid data for Int")
       }
       guard let value = buffer.readInteger(as: Int64.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Int")
+        throw ClientError.codecError("Invalid data for Int")
       }
       guard value >= Int.min && value <= Int.max else {
-        throw PostgreSQLError.codecError("bigint \(value) out of bounds for Int")
+        throw ClientError.codecError("bigint \(value) out of bounds for Int")
       }
       self = Int(value)
     } else if pgTypeOid == 23 {
       let value = try Int32(pgTypeOid: 23, buffer: &buffer)
       self = Int(value)
     } else {
-      throw PostgreSQLError.codecError("Cannot decode Int from \(pgTypeOid)")
+      throw ClientError.codecError("Cannot decode Int from \(pgTypeOid)")
     }
   }
 
@@ -180,7 +180,7 @@ extension Int: PostgreSQLCodable, PostgreSQLCodableArrayElement {
     } else if pgArrayTypeOid == 1007 {
       return 23
     }
-    throw PostgreSQLError.codecError("Cannot get Int element type oid from \(pgArrayTypeOid)")
+    throw ClientError.codecError("Cannot get Int element type oid from \(pgArrayTypeOid)")
   }
 }
 
@@ -191,21 +191,21 @@ extension String: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       buffer.writeInteger(Int32(utf8.count), as: Int32.self)
       buffer.writeBytes(utf8)
     } else {
-      throw PostgreSQLError.codecError("Cannot encode String as \(typeOid)")
+      throw ClientError.codecError("Cannot encode String as \(typeOid)")
     }
   }
 
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     if pgTypeOid == 25 || pgTypeOid == 1043 {
       guard let length = buffer.readInteger(as: Int32.self) else {
-        throw PostgreSQLError.codecError("Invalid data for String")
+        throw ClientError.codecError("Invalid data for String")
       }
       guard let string = buffer.readString(length: Int(length)) else {
-        throw PostgreSQLError.codecError("Invalid data for String")
+        throw ClientError.codecError("Invalid data for String")
       }
       self = string
     } else {
-      throw PostgreSQLError.codecError("Cannot decode String from \(pgTypeOid)")
+      throw ClientError.codecError("Cannot decode String from \(pgTypeOid)")
     }
   }
 
@@ -215,7 +215,7 @@ extension String: PostgreSQLCodable, PostgreSQLCodableArrayElement {
     } else if pgArrayTypeOid == 1015 {
       return 1043
     }
-    throw PostgreSQLError.codecError("Cannot get String element type oid from \(pgArrayTypeOid)")
+    throw ClientError.codecError("Cannot get String element type oid from \(pgArrayTypeOid)")
   }
 }
 
@@ -227,21 +227,21 @@ extension Float: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       buffer.writeInteger(Self.pgDataLength, as: Int32.self)
       buffer.writeInteger(self.bitPattern, as: UInt32.self)
     } else {
-      throw PostgreSQLError.codecError("Cannot encode Float as \(typeOid)")
+      throw ClientError.codecError("Cannot encode Float as \(typeOid)")
     }
   }
 
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     if pgTypeOid == 700 {
       guard Self.pgDataLength == buffer.readInteger(as: Int32.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Float")
+        throw ClientError.codecError("Invalid data for Float")
       }
       guard let bitPattern = buffer.readInteger(as: UInt32.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Float")
+        throw ClientError.codecError("Invalid data for Float")
       }
       self = Float(bitPattern: bitPattern)
     } else {
-      throw PostgreSQLError.codecError("Cannot decode Float from \(pgTypeOid)")
+      throw ClientError.codecError("Cannot decode Float from \(pgTypeOid)")
     }
   }
 
@@ -249,7 +249,7 @@ extension Float: PostgreSQLCodable, PostgreSQLCodableArrayElement {
     if pgArrayTypeOid == 1021 {
       return 700
     }
-    throw PostgreSQLError.codecError("Cannot get Float element type oid from \(pgArrayTypeOid)")
+    throw ClientError.codecError("Cannot get Float element type oid from \(pgArrayTypeOid)")
   }
 }
 
@@ -261,21 +261,21 @@ extension Double: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       buffer.writeInteger(Self.pgDataLength, as: Int32.self)
       buffer.writeInteger(self.bitPattern, as: UInt64.self)
     } else {
-      throw PostgreSQLError.codecError("Cannot encode Double as \(typeOid)")
+      throw ClientError.codecError("Cannot encode Double as \(typeOid)")
     }
   }
 
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     if pgTypeOid == 701 {
       guard Self.pgDataLength == buffer.readInteger(as: Int32.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Double")
+        throw ClientError.codecError("Invalid data for Double")
       }
       guard let bitPattern = buffer.readInteger(as: UInt64.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Double")
+        throw ClientError.codecError("Invalid data for Double")
       }
       self = Double(bitPattern: bitPattern)
     } else {
-      throw PostgreSQLError.codecError("Cannot decode Double from \(pgTypeOid)")
+      throw ClientError.codecError("Cannot decode Double from \(pgTypeOid)")
     }
   }
 
@@ -283,7 +283,7 @@ extension Double: PostgreSQLCodable, PostgreSQLCodableArrayElement {
     if pgArrayTypeOid == 1022 {
       return 701
     }
-    throw PostgreSQLError.codecError("Cannot get Double element type oid from \(pgArrayTypeOid)")
+    throw ClientError.codecError("Cannot get Double element type oid from \(pgArrayTypeOid)")
   }
 }
 
@@ -343,14 +343,14 @@ extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       }
 
     } else {
-      throw PostgreSQLError.codecError("Cannot encode Decimal as \(typeOid)")
+      throw ClientError.codecError("Cannot encode Decimal as \(typeOid)")
     }
   }
 
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     if pgTypeOid == 1700 {
       guard buffer.readInteger(as: Int32.self) != nil else {
-        throw PostgreSQLError.codecError("Invalid data for Decimal")
+        throw ClientError.codecError("Invalid data for Decimal")
       }
       guard let ndigits = buffer.readInteger(as: Int16.self),
         let weight = buffer.readInteger(as: Int16.self),
@@ -358,17 +358,17 @@ extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
         let sign = Sign(rawValue: sign),
         buffer.readInteger(as: Int16.self) != nil  // dscale
       else {
-        throw PostgreSQLError.codecError("Invalid data for Decimal")
+        throw ClientError.codecError("Invalid data for Decimal")
       }
       var digits = [UInt16]()
       for _ in 0..<ndigits {
         guard let digit = buffer.readInteger(as: UInt16.self) else {
-          throw PostgreSQLError.codecError("Invalid data for Decimal")
+          throw ClientError.codecError("Invalid data for Decimal")
         }
         digits.append(digit)
       }
       if case .posInfinity = sign, case .negInfinity = sign {
-        throw PostgreSQLError.codecError("Decimal infinity unsupported")
+        throw ClientError.codecError("Decimal infinity unsupported")
       } else if case .nan = sign {
         self = Decimal.nan
       } else if ndigits == 0 {
@@ -378,7 +378,7 @@ extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
           String(format: "%04d", $1) + ($0 == weight ? "." : "")
         }.joined()
         guard let unsigned = Decimal(string: unsignedString) else {
-          throw PostgreSQLError.codecError("Invalid data for Decimal")
+          throw ClientError.codecError("Invalid data for Decimal")
         }
         if sign == .negative {
           self = -unsigned
@@ -387,7 +387,7 @@ extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
         }
       }
     } else {
-      throw PostgreSQLError.codecError("Cannot decode Decimal from \(pgTypeOid)")
+      throw ClientError.codecError("Cannot decode Decimal from \(pgTypeOid)")
     }
   }
 
@@ -395,7 +395,7 @@ extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
     if pgArrayTypeOid == 1231 {
       return 1700
     }
-    throw PostgreSQLError.codecError("Cannot get Decimal element type oid from \(pgArrayTypeOid)")
+    throw ClientError.codecError("Cannot get Decimal element type oid from \(pgArrayTypeOid)")
   }
 }
 
@@ -410,23 +410,23 @@ extension Date: PostgreSQLCodable, PostgreSQLCodableArrayElement {
       buffer.writeInteger(Self.pgDataLength)
       buffer.writeInteger(microseconds, as: Int64.self)
     } else {
-      throw PostgreSQLError.codecError("Cannot encode Date as \(typeOid)")
+      throw ClientError.codecError("Cannot encode Date as \(typeOid)")
     }
   }
 
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     if pgTypeOid == 1114 || pgTypeOid == 1184 {
       guard Self.pgDataLength == buffer.readInteger(as: Int32.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Date")
+        throw ClientError.codecError("Invalid data for Date")
       }
       guard let microseconds = buffer.readInteger(as: Int64.self) else {
-        throw PostgreSQLError.codecError("Invalid data for Date")
+        throw ClientError.codecError("Invalid data for Date")
       }
       let epochDifference: TimeInterval = 946_684_800
       self = Date(
         timeIntervalSince1970: TimeInterval(microseconds) / 1_000_000 + epochDifference)
     } else {
-      throw PostgreSQLError.codecError("Cannot decode Date from \(pgTypeOid)")
+      throw ClientError.codecError("Cannot decode Date from \(pgTypeOid)")
     }
   }
 
@@ -436,7 +436,7 @@ extension Date: PostgreSQLCodable, PostgreSQLCodableArrayElement {
     } else if pgArrayTypeOid == 1115 {
       return 1114
     }
-    throw PostgreSQLError.codecError("Cannot get Date element type oid from \(pgArrayTypeOid)")
+    throw ClientError.codecError("Cannot get Date element type oid from \(pgArrayTypeOid)")
   }
 }
 
@@ -452,17 +452,17 @@ extension UUID: PostgreSQLCodable, PostgreSQLCodableArrayElement {
         b.8, b.9, b.10, b.11, b.12, b.13, b.14, b.15,
       ])
     } else {
-      throw PostgreSQLError.codecError("Cannot encode UUID as \(typeOid)")
+      throw ClientError.codecError("Cannot encode UUID as \(typeOid)")
     }
   }
 
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     if pgTypeOid == 2950 {
       guard Self.pgDataLength == buffer.readInteger(as: Int32.self) else {
-        throw PostgreSQLError.codecError("Invalid data for UUID")
+        throw ClientError.codecError("Invalid data for UUID")
       }
       guard let b = buffer.readBytes(length: 16) else {
-        throw PostgreSQLError.codecError("Invalid data for UUID")
+        throw ClientError.codecError("Invalid data for UUID")
       }
       self = .init(
         uuid: (
@@ -470,7 +470,7 @@ extension UUID: PostgreSQLCodable, PostgreSQLCodableArrayElement {
           b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
         ))
     } else {
-      throw PostgreSQLError.codecError("Cannot decode UUID from \(pgTypeOid)")
+      throw ClientError.codecError("Cannot decode UUID from \(pgTypeOid)")
     }
   }
 
@@ -478,7 +478,7 @@ extension UUID: PostgreSQLCodable, PostgreSQLCodableArrayElement {
     if pgArrayTypeOid == 2951 {
       return 2950
     }
-    throw PostgreSQLError.codecError("Cannot get UUID element type oid from \(pgArrayTypeOid)")
+    throw ClientError.codecError("Cannot get UUID element type oid from \(pgArrayTypeOid)")
   }
 }
 
@@ -495,7 +495,7 @@ extension Optional: PostgreSQLEncodable where Wrapped: PostgreSQLEncodable {
 extension Optional: PostgreSQLDecodable where Wrapped: PostgreSQLDecodable {
   public init(pgTypeOid: Int32, buffer: inout ByteBuffer) throws {
     guard let length = buffer.getInteger(at: buffer.readerIndex, as: Int32.self) else {
-      throw PostgreSQLError.codecError("Invalid data for Optional")
+      throw ClientError.codecError("Invalid data for Optional")
     }
     if length == -1 {
       buffer.moveReaderIndex(forwardBy: 4)
@@ -549,10 +549,10 @@ where Element: PostgreSQLCodableArrayElement, Element: PostgreSQLDecodable {
       let count = buffer.readInteger(as: Int32.self),
       let lbound = buffer.readInteger(as: Int32.self)
     else {
-      throw PostgreSQLError.codecError("Invalid array data")
+      throw ClientError.codecError("Invalid array data")
     }
     guard ndim == 1, lbound == 1 else {
-      throw PostgreSQLError.codecError("Invalid 1dim array data")
+      throw ClientError.codecError("Invalid 1dim array data")
     }
     let elements = try (0..<count).map { _ in
       try Element?(pgArrayTypeOid: pgTypeOid, buffer: &buffer)
