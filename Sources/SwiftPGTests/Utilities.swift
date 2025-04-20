@@ -32,6 +32,10 @@ func getPlainSaslConnectionConfigs() -> PostgreSQLConnectionConfigs {
   )
 }
 
+func getPlainTrustHost() -> String {
+  return ProcessInfo.processInfo.environment["PG_PLAIN_TRUST_HOST"] ?? "localhost"
+}
+
 func getPlainTrustHostPort() -> PostgreSQLConnectionConfigs.SocketAddress {
   let host = ProcessInfo.processInfo.environment["PG_PLAIN_TRUST_HOST"] ?? "localhost"
   let port = Int(ProcessInfo.processInfo.environment["PG_PLAIN_TRUST_PORT"] ?? "6450") ?? 6450
