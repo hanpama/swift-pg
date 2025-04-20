@@ -27,10 +27,10 @@ public struct PostgreSQLConnectionConfigs: Sendable {
 
   public static func fromDatabaseURL(_ databaseURL: String) throws -> PostgreSQLConnectionConfigs {
     guard let components = URLComponents(string: databaseURL) else {
-      throw PostgreSQLError.clientError("Invalid URL")
+      throw ClientError.configurationError("Invalid URL")
     }
     guard let scheme = components.scheme, scheme == "postgres" || scheme == "postgresql" else {
-      throw PostgreSQLError.clientError("Invalid URL scheme: \(components.scheme ?? "")")
+      throw ClientError.configurationError("Invalid URL scheme: \(components.scheme ?? "")")
     }
 
     let hostPart = components.host
@@ -73,7 +73,7 @@ public struct PostgreSQLConnectionConfigs: Sendable {
     case "verify-full":
       sslmode = .verifyFull
     default:
-      throw PostgreSQLError.clientError("Invalid sslmode: \(sslmodeQuery)")
+      throw ClientError.configurationError("Invalid sslmode: \(sslmodeQuery)")
     }
 
     let sslcert = components.queryItems?.first(where: { $0.name == "sslcert" })?.value

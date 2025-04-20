@@ -69,7 +69,7 @@ enum PostgreSQLErrorNoticeMessageField: Sendable {
   case position(String)
   case internalPosition(String)
   case internalQuery(String)
-  case where_(String)
+  case `where`(String)
   case schemaName(String)
   case tableName(String)
   case columnName(String)

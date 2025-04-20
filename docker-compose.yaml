@@ -94,7 +94,7 @@ services:
       - ./certs:/certs
 
   test:
-    image: swift:6.0.3
+    image: swift:6.1.0
     volumes:
       - .:/app
       - postgres_plain_trust_sockets:/postgres_plain_trust_sockets

@@ -111,7 +111,7 @@ private final class Waiter: Sendable {
     if let timeout = timeout {
       self.timeout = Task {
         try await Task.sleep(for: timeout)
-        promise.fail(PostgreSQLError.operationTimeout)
+        promise.fail(ClientError.operationTimeout)
       }
     } else {
       self.timeout = nil

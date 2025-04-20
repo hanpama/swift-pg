@@ -28,8 +28,8 @@ public final class PostgreSQLConnection: Sendable {
       switch message {
       case .backendKeyData(_, _):
         break loop
-      case .errorResponse(let fields):
-        throw PostgreSQLError.databaseError(fields.description)
+      case .errorResponse(let errorMessage):
+        throw DatabaseError.from(errorMessage: errorMessage)
       case .noticeResponse(_), .notificationResponse(_, _, _), .parameterStatus(_, _):
         break
       default:
@@ -161,8 +161,8 @@ public final class PostgreSQLConnection: Sendable {
         return nil
       case .portalSuspended:
         try await send(.execute("", rowLimit))
-      case .errorResponse(let message):
-        throw PostgreSQLError.databaseError(message.description)
+      case .errorResponse(let errorMessage):
+        throw DatabaseError.from(errorMessage: errorMessage)
       case .dataRow(_, let columnData):
         return .init(
           defaultDecoderMap: defaultDecoderMap,
@@ -180,8 +180,8 @@ public final class PostgreSQLConnection: Sendable {
       switch try await receive() {
       case .commandComplete(_):
         break loop
-      case .errorResponse(let fields):
-        throw PostgreSQLError.databaseError(fields.description)
+      case .errorResponse(let errorMessage):
+        throw DatabaseError.from(errorMessage: errorMessage)
       default:
         break
       }
@@ -204,8 +204,8 @@ public final class PostgreSQLConnection: Sendable {
         break loop
       case .parameterDescription(let oids):
         parameterOids = oids
-      case .errorResponse(let fields):
-        throw PostgreSQLError.databaseError(fields.description)
+      case .errorResponse(let errorMessage):
+        throw DatabaseError.from(errorMessage: errorMessage)
       default:
         break
       }
@@ -242,8 +242,8 @@ public final class PostgreSQLConnection: Sendable {
       switch message {
       case .readyForQuery:
         break loop
-      case .errorResponse(let fields):
-        throw PostgreSQLError.databaseError(fields.description)
+      case .errorResponse(let errorMessage):
+        throw DatabaseError.from(errorMessage: errorMessage)
       case .noticeResponse(_), .notificationResponse(_, _, _):
         break
       default:
@@ -285,8 +285,8 @@ public final class PostgreSQLConnection: Sendable {
       case .authenticationSaslFinal(let finalMessage):
         try scramSha256Authenticator!.handleServerFinalMessage(finalMessage)
 
-      case .errorResponse(let fields):
-        throw PostgreSQLError.databaseError(fields.description)
+      case .errorResponse(let errorMessage):
+        throw DatabaseError.from(errorMessage: errorMessage)
 
       default:
         break
@@ -304,14 +304,14 @@ public final class PostgreSQLConnection: Sendable {
       // print("Received message: \(message)")
       return message
     case .none:
-      throw PostgreSQLError.clientError("Connection closed")
+      throw ClientError.connectionError("Connection closed")
     }
   }
 
   private func getProtocolClient() throws -> PostgreSQLProtocolClient {
     let protocolClient = protocolClientBox.withLockedValue { $0 }
     guard let protocolClient = protocolClient else {
-      throw PostgreSQLError.clientError("Connection not established")
+      throw ClientError.connectionError("Connection not established")
     }
     return protocolClient
   }
@@ -321,7 +321,7 @@ public final class PostgreSQLConnection: Sendable {
   private func withinCurrentTask(_ body: @Sendable @escaping () async throws -> Void) throws {
     try currentTask.withLockedValue({ currentTask in
       if case .some = currentTask {
-        throw PostgreSQLError.clientError("Operation already in progress")
+        throw ClientError.concurrencyError("Operation already in progress")
       } else {
         currentTask = Task {
           defer { self.currentTask.withLockedValue({ $0 = nil }) }
@@ -334,8 +334,6 @@ public final class PostgreSQLConnection: Sendable {
   func waitCurrentTask() async throws {
     if let task = currentTask.withLockedValue({ $0 }) {
       try await task.result.get()
-    } else {
-      throw PostgreSQLError.clientError("No current task")
     }
   }
 }
@@ -370,10 +368,6 @@ public struct PostgreSQLRow: Sendable {
   let defaultDecoderMap: [Int32: PostgreSQLDecodable.Type]
   let fieldOids: [Int32]
   let columns: ByteBuffer
-
-  public func decode<each V>(_ types: (repeat each V).Type) throws -> (repeat each V) {
-    return try decode<each V>()
-  }
 
   public func decode<each V>() throws -> (repeat each V) {
     var buffer = columns

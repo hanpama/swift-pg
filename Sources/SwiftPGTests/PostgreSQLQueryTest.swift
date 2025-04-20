@@ -16,7 +16,7 @@ final class PostgreSQLQueryTest {
         [3],
       ])
 
-    let values = rows.map { row in try row.decode(Int64.self) }
+    let values = rows.map { row in try row.decode<Int64>() }
     var iterator = values.makeAsyncIterator()
 
     #expect(try await iterator.next() == 1)

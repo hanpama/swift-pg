@@ -52,7 +52,7 @@ final class PostgreSQLConnectionTests {
     // Verify connection failure with invalid credentials.
     let conn = PostgreSQLConnection()
 
-    await #expect(throws: PostgreSQLError.self) {
+    let err = await #expect(throws: DatabaseError.self) {
       try await conn.connect(
         configs: .init(
           socketAddress: getPlainTrustHostPort(),
@@ -67,6 +67,7 @@ final class PostgreSQLConnectionTests {
         )
       )
     }
+    
     // #expect(!conn.isConnected())
     // conn.close()
   }

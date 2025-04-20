@@ -122,7 +122,7 @@ struct PostgreSQLProtocolClient: Sendable {
       tlsConfig.additionalTrustRoots = [.file(sslrootcert)]
     }
     guard case let .hostPort(host, _) = configs.socketAddress else {
-      throw PostgreSQLError.clientError("Host is required for TLS connections")
+      throw ClientError.configurationError("Host is required for TLS connections")
     }
     let sslContext = try NIOSSLContext(configuration: tlsConfig)
     let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
@@ -190,9 +190,7 @@ struct PostgreSQLProtocolClient: Sendable {
         case 12:
           message = .authenticationSaslFinal(buffer.readString(length: buffer.readableBytes)!)
         default:
-          throw PostgreSQLError.clientError(
-            "Unknown authentication message type: \(authMessageType)"
-          )
+          throw DriverError("Unknown authentication message type: \(authMessageType)")
         }
       case 75:  // 'K'
         let processID = buffer.readInteger(as: Int32.self)!
@@ -309,7 +307,7 @@ struct PostgreSQLProtocolClient: Sendable {
         case 80: field = .position(fieldValue)  // 'P'
         case 112: field = .internalPosition(fieldValue)  // 'p'
         case 113: field = .internalQuery(fieldValue)  // 'q'
-        case 87: field = .where_(fieldValue)  // 'W'
+        case 87: field = .where(fieldValue)  // 'W'
         case 115: field = .schemaName(fieldValue)  // 's'
         case 116: field = .tableName(fieldValue)  // 't'
         case 99: field = .columnName(fieldValue)  // 'c'
