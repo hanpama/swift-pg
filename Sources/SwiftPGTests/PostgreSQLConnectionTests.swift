@@ -118,7 +118,9 @@ final class PostgreSQLConnectionTests {
     @Test func connectFailureInvalidPort() async throws {
         // Test connection attempt to an invalid port.
         let conn = PostgreSQLConnection()
-        await #expect(throws: NIO.SocketAddressError.self) {
+
+        // SocketAddressError on MacOS, IOError on Linux
+        await #expect(throws: Error.self) {
             try await conn.connect(
                 configs: .init(
                     socketAddress: .hostPort(host: getPlainTrustHost(), port: 99999),

@@ -129,8 +129,7 @@ struct PostgreSQLProtocolClient: Sendable {
         return sslHandler
     }
 
-    private final class PostgreSQLMessageCodec: ByteToMessageDecoder, MessageToByteEncoder, Sendable
-    {
+    private final class PostgreSQLMessageCodec: ByteToMessageDecoder, MessageToByteEncoder, Sendable {
         typealias OutboundIn = PostgreSQLFrontendMessage
         typealias InboundOut = PostgreSQLBackendMessage
 

@@ -181,8 +181,7 @@ class ScramSha256Authenticator {
         return result
     }
 
-    private func pbkdf2SHA256(pass: SymmetricKey, salt: Data, iterations: Int, outLen: Int) -> Data
-    {
+    private func pbkdf2SHA256(pass: SymmetricKey, salt: Data, iterations: Int, outLen: Int) -> Data {
         let hashLength = 32
         let blocks = (outLen + hashLength - 1) / hashLength
         var derivedKey = Data()

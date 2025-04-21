@@ -275,8 +275,7 @@ public final class PostgreSQLConnection: Sendable {
                 break loop
 
             case .authenticationSasl(let mechanisms):
-                if mechanisms.contains("SCRAM-SHA-256") || mechanisms.contains("SCRAM-SHA-256-PLUS")
-                {
+                if mechanisms.contains("SCRAM-SHA-256") || mechanisms.contains("SCRAM-SHA-256-PLUS") {
                     scramSha256Authenticator = try ScramSha256Authenticator(
                         username: username, password: password)
 

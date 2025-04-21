@@ -25,8 +25,7 @@ public struct PostgreSQLConnectionConfigs: Sendable {
         case verifyFull = "verify-full"
     }
 
-    public static func fromDatabaseURL(_ databaseURL: String) throws -> PostgreSQLConnectionConfigs
-    {
+    public static func fromDatabaseURL(_ databaseURL: String) throws -> PostgreSQLConnectionConfigs {
         guard let components = URLComponents(string: databaseURL) else {
             throw ClientError.configurationError("Invalid URL")
         }
