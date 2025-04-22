@@ -1,14 +1,14 @@
-import AsyncAlgorithms
+// import AsyncAlgorithms
 import NIO
 import NIOSSL
 import NIOTLS
 
-struct PostgreSQLProtocolClient: Sendable {
+final class PostgreSQLProtocolClient: @unchecked Sendable {
     private let channel: Channel
     private let outbound: Outbound
-    private let inbound: Inbound
+    private var inbound: Inbound.AsyncIterator
     private typealias Outbound = NIOAsyncChannelOutboundWriter<PostgreSQLFrontendMessage>
-    private typealias Inbound = AsyncThrowingChannel<PostgreSQLBackendMessage, Error>
+    private typealias Inbound = NIOAsyncChannelInboundStream<PostgreSQLBackendMessage>
 
     init(eventLoop loop: EventLoop, configs: PostgreSQLConnectionConfigs) async throws {
 
@@ -50,26 +50,21 @@ struct PostgreSQLProtocolClient: Sendable {
             )
         }.get()
 
-        let messages = AsyncThrowingChannel<PostgreSQLBackendMessage, Error>()
-        let outboundPromise = loop.makePromise(of: Outbound.self)
+        let ioPromise = loop.makePromise(of: (Inbound, Outbound).self)
 
         Task {
             do {
                 try await asyncChannel.executeThenClose { inbound, outbound in
-                    outboundPromise.succeed(outbound)
-                    for try await message in inbound {
-                        await messages.send(message)
-                    }
-                    messages.finish()
+                    ioPromise.succeed((inbound, outbound))
+                    try await channel.closeFuture.get()
                 }
             } catch {
-                messages.fail(error)
-                outboundPromise.fail(error)
+                ioPromise.fail(error)
             }
         }
-
-        self.outbound = try await outboundPromise.futureResult.get()
-        self.inbound = messages
+        let (inbound, outbound) = try await ioPromise.futureResult.get()
+        self.inbound = inbound.makeAsyncIterator()
+        self.outbound = outbound
         self.channel = channel
     }
 
@@ -90,7 +85,7 @@ struct PostgreSQLProtocolClient: Sendable {
     }
 
     func receive() async throws -> PostgreSQLBackendMessage? {
-        return try await inbound.first { _ in true }
+        return try await inbound.next()  // TODO: make it thread safe
     }
 
     private static func getTLSHandler(configs: PostgreSQLConnectionConfigs) throws

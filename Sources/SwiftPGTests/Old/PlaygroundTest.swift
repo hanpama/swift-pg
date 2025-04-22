@@ -6,6 +6,97 @@ import Testing
 
 final class PlaygroundTest {
     @Test func testPlaygroundTest() async throws {
+        let conn = PostgreSQLConnection()
+
+        try await conn.connect(configs: getPlainSaslConnectionConfigs())
+
+        // let promise = loopGroup.next().makePromise(of: Int.self)
+        let task = Task {
+            try await conn.execute("SELECT pg_sleep(1);")
+            // do {
+            //     // try await Task.sleep(nanoseconds: 1_000_000_000)
+            //     promise.succeed(0)
+            // } catch {
+            //     print("Error: \(error)")
+            //     promise.fail(error)
+            // }
+        }
+        print("Canceling task")
+        task.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            let _ = try await task.result.get()
+        }
+
+        print(conn)
+    }
+
+    @Test func testPlaygroundTest2() async throws {
+        let conn = PostgreSQLConnection()
+
+        try await conn.connect(configs: getPlainSaslConnectionConfigs())
+
+        // let promise = loopGroup.next().makePromise(of: Int.self)
+        let task = Task {
+            print("t1: \(Date().timeIntervalSinceReferenceDate)")
+            let rows = try await conn.query("SELECT pg_sleep(1);")
+            print("t2: \(Date().timeIntervalSinceReferenceDate)")
+            print(rows)
+            // do {
+            //     // try await Task.sleep(nanoseconds: 1_000_000_000)
+            //     promise.succeed(0)
+            // } catch {
+            //     print("Error: \(error)")
+            //     promise.fail(error)
+            // }
+        }
+        print("Canceling task")
+        task.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            let _ = try await task.result.get()
+        }
+    }
+
+    @Test func testPC() async throws {
+        let loopGroup = MultiThreadedEventLoopGroup.singleton
+
+        let pc = try await PostgreSQLProtocolClient(
+            eventLoop: loopGroup.next(), configs: getPlainSaslConnectionConfigs())
+
+        let task = Task {
+            try await pc.receive()
+        }
+        task.cancel()
+        await #expect(throws: CancellationError.self) {
+            try await task.result.get()
+            // print("Value", try await task.value as Any)
+        }
+        try await pc.close()
+    }
+
+    // @Test func testTaskGroup() async throws {
+
+    //     let taskGroup = try await withTaskGroup(of: Void.self) { group in
+
+    //     }
+    // }
+
+    @Test func test2() async throws {
+        let loopGroup = MultiThreadedEventLoopGroup.singleton
+        let t2 = Task {
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            print("Task 2")
+        }
+        let task = Task {
+            try await t2.result.get()
+            print("Task 1")
+        }
+        t2.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            let _ = try await task.result.get()
+        }
 
         // let loopGroup1 = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         // let conn1 = try await PostgreSQLConnection(configs: getSecureConfigs())
@@ -55,6 +146,5 @@ final class PlaygroundTest {
         // }.reversed()
 
         // print(Array(splitArray))  // [\"12\", \"3456\", \"7891\", \"2345\"]
-
     }
 }

@@ -8,17 +8,13 @@ import NIOSSL
 public final class PostgreSQLConnection: Sendable {
     private let eventLoopGroup: EventLoopGroup
     let defaultDecoderMap: [Int32: PostgreSQLDecodable.Type] = DEFAULT_DECODER_MAP
-    private let stateBox: NIOLockedValueBox<State>
-
-    private struct State {
-        var protocolClient: PostgreSQLProtocolClient?
-        var currentTask: Task<Void, Error>?
-        var lastError: Error?
-    }
+    private let protocolCiientBox: NIOLockedValueBox<PostgreSQLProtocolClient?> = .init(nil)
+    private let currentTaskBox: NIOLockedValueBox<Task<Void, Error>?> = .init(nil)
+    private let connectionErrorBox: NIOLockedValueBox<Error?> = .init(nil)
+    // private let query
 
     public init(eventLoopGroup: EventLoopGroup = MultiThreadedEventLoopGroup.singleton) {
         self.eventLoopGroup = eventLoopGroup
-        self.stateBox = .init(State())
     }
 
     public func connect(configs: PostgreSQLConnectionConfigs) async throws {
@@ -26,39 +22,19 @@ public final class PostgreSQLConnection: Sendable {
             eventLoop: eventLoopGroup.next(),
             configs: configs
         )
-        stateBox.withLockedValue { state in
-            state.protocolClient = protocolClient
-            state.currentTask = nil
-            state.lastError = nil
-        }
+        protocolCiientBox.withLockedValue { $0 = protocolClient }
+
         try await send(.startupMessage(configs.username, configs.database))
         try await authenticate(username: configs.username, password: configs.password)
-        loop: while true {
-            let message = try await receive()
-            switch message {
-            case .backendKeyData(_, _):
-                break loop
-            case .errorResponse(let errorMessage):
-                throw DatabaseError.from(errorMessage: errorMessage)
-            case .noticeResponse(_), .notificationResponse(_, _, _), .parameterStatus(_, _):
-                break
-            default:
-                throw DriverError("Unexpected message: \(message)")
-            }
-        }
+        try await waitKeyData()
+        try await readyForQuery()
     }
 
     public func close() async throws {
-        let state = stateBox.withLockedValue {
-            let state = $0
-            $0.protocolClient = nil
-            $0.currentTask = nil
-            $0.lastError = nil
-            return state
-        }
-        state.currentTask?.cancel()
-        try await state.protocolClient?.close()
-
+        cancelCurrentTask()
+        let protocolClient = protocolCiientBox.withLockedValue { $0 }
+        try await protocolClient?.send(.terminate)
+        try await protocolClient?.close()
     }
 
     public func isConnected() -> Bool {
@@ -75,15 +51,14 @@ public final class PostgreSQLConnection: Sendable {
         return true
     }
 
-    public func query(_ sql: String, _ params: [PostgreSQLEncodable] = []) async throws
-        -> PostgreSQLRows
-    {
+    public func query(_ sql: String, _ params: [PostgreSQLEncodable] = []) async throws -> PostgreSQLRows {
         let promise = eventLoopGroup.next().makePromise(of: PostgreSQLRows.self)
-        try withinCurrentTask {
+        try withCurrentTask {
             do {
                 let stmt = try await self.parseStmt(name: "", sql: sql)
                 try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
                 try await self.sync()
+
                 let rows = PostgreSQLRows()
                 promise.succeed(rows)
                 do {
@@ -93,17 +68,23 @@ public final class PostgreSQLConnection: Sendable {
                     rows.channel.finish()
                 } catch {
                     rows.channel.fail(error)
+                    throw error
                 }
             } catch {
                 promise.fail(error)
+                throw error
             }
         }
-        return try await promise.futureResult.get()
+        return try await withTaskCancellationHandler {
+            try await promise.futureResult.get()
+        } onCancel: {
+            cancelCurrentTask()
+        }
     }
 
     public func execute(_ sql: String, _ params: [PostgreSQLEncodable] = []) async throws {
         let promise = eventLoopGroup.next().makePromise(of: Void.self)
-        try withinCurrentTask {
+        try withCurrentTask {
             do {
                 let stmt = try await self.parseStmt(name: "", sql: sql)
                 try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
@@ -112,22 +93,26 @@ public final class PostgreSQLConnection: Sendable {
                 promise.succeed(())
             } catch {
                 promise.fail(error)
+                throw error
             }
         }
-        return try await promise.futureResult.get()
+        try await withTaskCancellationHandler {
+            try await promise.futureResult.get()
+        } onCancel: {
+            cancelCurrentTask()
+        }
     }
 
-    public func batchQuery(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws
-        -> PostgreSQLRows
-    {
+    public func batchQuery(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws -> PostgreSQLRows {
         let promise = eventLoopGroup.next().makePromise(of: PostgreSQLRows.self)
-        try withinCurrentTask {
+        try withCurrentTask {
             do {
                 let stmt = try await self.parseStmt(name: "", sql: sql)
                 for params in batches {
                     try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
                 }
                 try await self.sync()
+
                 let rows = PostgreSQLRows()
                 promise.succeed(rows)
                 do {
@@ -139,17 +124,23 @@ public final class PostgreSQLConnection: Sendable {
                     rows.channel.finish()
                 } catch {
                     rows.channel.fail(error)
+                    throw error
                 }
             } catch {
                 promise.fail(error)
+                throw error
             }
         }
-        return try await promise.futureResult.get()
+        return try await withTaskCancellationHandler {
+            try await promise.futureResult.get()
+        } onCancel: {
+            cancelCurrentTask()
+        }
     }
 
     public func batchExecute(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws {
         let promise = eventLoopGroup.next().makePromise(of: Void.self)
-        try withinCurrentTask {
+        try withCurrentTask {
             do {
                 let stmt = try await self.parseStmt(name: "", sql: sql)
                 for params in batches {
@@ -162,12 +153,17 @@ public final class PostgreSQLConnection: Sendable {
                 promise.succeed(())
             } catch {
                 promise.fail(error)
+                throw error
             }
         }
-        return try await promise.futureResult.get()
+        try await withTaskCancellationHandler {
+            try await promise.futureResult.get()
+        } onCancel: {
+            cancelCurrentTask()
+        }
     }
 
-    func receiveRow(stmt: PostgreSQLStatement, rowLimit: Int32) async throws -> PostgreSQLRow? {
+    private func receiveRow(stmt: PostgreSQLStatement, rowLimit: Int32) async throws -> PostgreSQLRow? {
         loop: while true {
             switch try await receive() {
             case .commandComplete(_):
@@ -250,6 +246,22 @@ public final class PostgreSQLConnection: Sendable {
         try await send(.sync)
     }
 
+    private func waitKeyData() async throws {
+        loop: while true {
+            let message = try await receive()
+            switch message {
+            case .backendKeyData(_, _):
+                break loop
+            case .errorResponse(let errorMessage):
+                throw DatabaseError.from(errorMessage: errorMessage)
+            case .noticeResponse(_), .notificationResponse(_, _, _), .parameterStatus(_, _):
+                break
+            default:
+                throw DriverError("Unexpected message: \(message)")
+            }
+        }
+    }
+
     private func readyForQuery() async throws {
         loop: while true {
             let message = try await receive()
@@ -315,7 +327,7 @@ public final class PostgreSQLConnection: Sendable {
     private func receive() async throws -> PostgreSQLBackendMessage {
         switch try await getProtocolClient().receive() {
         case .some(let message):
-            // print("Received message: \(message)")
+            print("Received message: \(message)")
             return message
         case .none:
             throw ClientError.connectionError("Connection closed")
@@ -323,47 +335,43 @@ public final class PostgreSQLConnection: Sendable {
     }
 
     private func getProtocolClient() throws -> PostgreSQLProtocolClient {
-        let protocolClient = stateBox.withLockedValue { $0.protocolClient }
+        let protocolClient = protocolCiientBox.withLockedValue { $0 }
         guard let protocolClient = protocolClient else {
             throw ClientError.connectionError("Connection not established")
         }
         return protocolClient
     }
 
-    private func withinCurrentTask(_ body: @Sendable @escaping () async throws -> Void) throws {
-        try stateBox.withLockedValue({ state in
-            guard case .none = state.lastError else {
-                throw state.lastError!
-            }
-            guard case .none = state.currentTask else {
+    private func withCurrentTask(_ op: @Sendable @escaping @isolated(any) () async throws -> Void) throws {
+        let task = Task(operation: op)
+        try currentTaskBox.withLockedValue({ currentTask in
+            guard case .none = currentTask else {
                 throw ClientError.concurrencyError("Operation already in progress")
             }
-            state.currentTask = Task {
-                do {
-                    try await body()
-                }
-                do {
-                    try await self.readyForQuery()
-                    stateBox.withLockedValue {
-                        $0.currentTask = nil
-                    }
-                } catch {
-                    try await stateBox.withLockedValue {
-                        let protocolClient = $0.protocolClient
-                        $0.lastError = error
-                        $0.currentTask = nil
-                        $0.protocolClient = nil
-                        return protocolClient
-                    }?.close()
-                }
-            }
+            currentTask = task
         })
+        Task {
+            do { try await task.value }
+            currentTaskBox.withLockedValue { $0 = nil }
+
+            do {
+                try await readyForQuery()
+            } catch {
+                print("withCurrentTask readyForQuery error: \(error)")
+                try await close()
+            }
+        }
+    }
+
+    private func cancelCurrentTask() {
+        currentTaskBox.withLockedValue {
+            $0?.cancel()
+            $0 = nil
+        }
     }
 
     func waitCurrentTask() async throws {
-        if let task = stateBox.withLockedValue({ $0.currentTask }) {
-            try await task.result.get()
-        }
+        try await currentTaskBox.withLockedValue { $0 }?.value
     }
 }
 
