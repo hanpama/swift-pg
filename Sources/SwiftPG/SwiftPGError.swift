@@ -1,4 +1,4 @@
-public protocol SwiftPGError: Error {}
+public protocol SwiftPGError: Swift.Error {}
 
 public struct DriverError: SwiftPGError {
     let description: String

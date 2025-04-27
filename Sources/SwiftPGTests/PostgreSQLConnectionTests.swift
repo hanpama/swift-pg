@@ -7,22 +7,21 @@ import Testing
 @testable import SwiftPG
 
 final class PostgreSQLConnectionTests {
-    @Test func connectSuccessHostPort() async throws {
-        // Verify successful connection using host/port.
-        let conn = PostgreSQLConnection()
-        try await conn.connect(
-            configs: .init(
-                socketAddress: getPlainTrustHostPort(),
-                username: "postgres",
-                password: "postgres",
-                database: "postgres",
-                sslmode: .disable,
-                sslcert: nil,
-                sslkey: nil,
-                sslrootcert: nil,
-                sslcrl: nil
-            )
-        )
+
+    @Test(arguments: environments)
+    func connectSuccessLocalTrust(env: TestEnvironment) async throws {
+        let conn = Connection()
+        let configs = getLocalTrustConnectionConfigs(env)!
+        try await conn.connect(configs: configs)
+        #expect(conn.isConnected())
+        try await conn.close()
+    }
+
+    @Test(arguments: environments)
+    func connectSuccessHostTrust(env: TestEnvironment) async throws {
+        let conn = Connection()
+        let configs = getHostTrustConnectionConfigs(env)
+        try await conn.connect(configs: configs)
         #expect(conn.isConnected())
         try await conn.close()
     }
@@ -30,7 +29,7 @@ final class PostgreSQLConnectionTests {
     @Test(.enabled(if: getPlainTrustUnixSocket() != nil))
     func connectSuccessUnixSocket() async throws {
         // Verify successful connection using Unix socket.
-        let conn = PostgreSQLConnection()
+        let conn = Connection()
         try await conn.connect(
             configs: .init(
                 socketAddress: getPlainTrustUnixSocket()!,
@@ -50,7 +49,7 @@ final class PostgreSQLConnectionTests {
 
     @Test() func connectFailureInvalidCredentials() async throws {
         // Verify connection failure with invalid credentials.
-        let conn = PostgreSQLConnection()
+        let conn = Connection()
 
         let err = await #expect(throws: DatabaseError.self) {
             try await conn.connect(
@@ -74,7 +73,7 @@ final class PostgreSQLConnectionTests {
 
     @Test() func connectFailureInvalidDatabase() async throws {
         // Test connection attempt to a non-existent database.
-        let conn = PostgreSQLConnection()
+        let conn = Connection()
         let err = await #expect(throws: DatabaseError.self) {
             try await conn.connect(
                 configs: .init(
@@ -97,7 +96,7 @@ final class PostgreSQLConnectionTests {
 
     @Test() func connectFailureInvalidHost() async throws {
         // Test connection attempt to an invalid host.
-        let conn = PostgreSQLConnection()
+        let conn = Connection()
         await #expect(throws: NIO.SocketAddressError.self) {
             try await conn.connect(
                 configs: .init(
@@ -117,7 +116,7 @@ final class PostgreSQLConnectionTests {
 
     @Test func connectFailureInvalidPort() async throws {
         // Test connection attempt to an invalid port.
-        let conn = PostgreSQLConnection()
+        let conn = Connection()
 
         // SocketAddressError on MacOS, IOError on Linux
         await #expect(throws: Error.self) {

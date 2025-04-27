@@ -7,7 +7,7 @@ import Testing
 
 final class PostgreSQLConnectionTLSTest {
     @Test func tlsModeDisableSuccessToNonTLSInstance() async throws {
-        let conn = PostgreSQLConnection()
+        let conn = Connection()
         try await conn.connect(
             configs: .init(
                 socketAddress: getTlsSaslHostPort(),

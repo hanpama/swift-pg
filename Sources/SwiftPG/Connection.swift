@@ -5,20 +5,20 @@ import NIO
 import NIOConcurrencyHelpers
 import NIOSSL
 
-public final class PostgreSQLConnection: Sendable {
+public final class Connection: Sendable {
     private let eventLoopGroup: EventLoopGroup
     let defaultDecoderMap: [Int32: PostgreSQLDecodable.Type] = DEFAULT_DECODER_MAP
-    private let protocolCiientBox: NIOLockedValueBox<PostgreSQLProtocolClient?> = .init(nil)
-    private let currentTaskBox: NIOLockedValueBox<Task<Void, Error>?> = .init(nil)
-    private let connectionErrorBox: NIOLockedValueBox<Error?> = .init(nil)
+    private let protocolCiientBox: NIOLockedValueBox<ProtocolClient?> = .init(nil)
+    private let currentTaskBox: NIOLockedValueBox<Task<Void, Swift.Error>?> = .init(nil)
+    private let connectionErrorBox: NIOLockedValueBox<Swift.Error?> = .init(nil)
     // private let query
 
     public init(eventLoopGroup: EventLoopGroup = MultiThreadedEventLoopGroup.singleton) {
         self.eventLoopGroup = eventLoopGroup
     }
 
-    public func connect(configs: PostgreSQLConnectionConfigs) async throws {
-        let protocolClient = try await PostgreSQLProtocolClient(
+    public func connect(configs: ConnectionConfigs) async throws {
+        let protocolClient = try await ProtocolClient(
             eventLoop: eventLoopGroup.next(),
             configs: configs
         )
@@ -334,7 +334,7 @@ public final class PostgreSQLConnection: Sendable {
         }
     }
 
-    private func getProtocolClient() throws -> PostgreSQLProtocolClient {
+    private func getProtocolClient() throws -> ProtocolClient {
         let protocolClient = protocolCiientBox.withLockedValue { $0 }
         guard let protocolClient = protocolClient else {
             throw ClientError.connectionError("Connection not established")
@@ -357,7 +357,7 @@ public final class PostgreSQLConnection: Sendable {
             do {
                 try await readyForQuery()
             } catch {
-                print("withCurrentTask readyForQuery error: \(error)")
+                // print("withCurrentTask readyForQuery error: \(error)")
                 try await close()
             }
         }
@@ -389,8 +389,8 @@ public struct PostgreSQLStatement: Sendable {
 
 public struct PostgreSQLRows: AsyncSequence, Sendable {
     public typealias Element = PostgreSQLRow
-    public typealias AsyncIterator = AsyncThrowingChannel<Element, Error>.AsyncIterator
-    let channel = AsyncThrowingChannel<PostgreSQLRow, Error>()
+    public typealias AsyncIterator = AsyncThrowingChannel<Element, Swift.Error>.AsyncIterator
+    let channel = AsyncThrowingChannel<PostgreSQLRow, Swift.Error>()
 
     public func makeAsyncIterator() -> AsyncIterator {
         return channel.makeAsyncIterator()

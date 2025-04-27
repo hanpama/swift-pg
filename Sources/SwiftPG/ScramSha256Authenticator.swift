@@ -206,6 +206,6 @@ class ScramSha256Authenticator {
     }
 }
 
-public struct ScramSha256AuthenticatorError: Error {
+public struct ScramSha256AuthenticatorError: Swift.Error {
     let message: String
 }

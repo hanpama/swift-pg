@@ -6,7 +6,7 @@ import Testing
 
 final class PlaygroundTest {
     @Test func testPlaygroundTest() async throws {
-        let conn = PostgreSQLConnection()
+        let conn = Connection()
 
         try await conn.connect(configs: getPlainSaslConnectionConfigs())
 
@@ -32,7 +32,7 @@ final class PlaygroundTest {
     }
 
     @Test func testPlaygroundTest2() async throws {
-        let conn = PostgreSQLConnection()
+        let conn = Connection()
 
         try await conn.connect(configs: getPlainSaslConnectionConfigs())
 
@@ -61,7 +61,7 @@ final class PlaygroundTest {
     @Test func testPC() async throws {
         let loopGroup = MultiThreadedEventLoopGroup.singleton
 
-        let pc = try await PostgreSQLProtocolClient(
+        let pc = try await ProtocolClient(
             eventLoop: loopGroup.next(), configs: getPlainSaslConnectionConfigs())
 
         let task = Task {

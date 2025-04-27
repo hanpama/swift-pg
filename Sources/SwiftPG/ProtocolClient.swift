@@ -1,16 +1,17 @@
 // import AsyncAlgorithms
 import NIO
+import NIOConcurrencyHelpers
 import NIOSSL
 import NIOTLS
 
-final class PostgreSQLProtocolClient: @unchecked Sendable {
+final class ProtocolClient: @unchecked Sendable {
     private let channel: Channel
     private let outbound: Outbound
     private var inbound: Inbound.AsyncIterator
     private typealias Outbound = NIOAsyncChannelOutboundWriter<PostgreSQLFrontendMessage>
     private typealias Inbound = NIOAsyncChannelInboundStream<PostgreSQLBackendMessage>
 
-    init(eventLoop loop: EventLoop, configs: PostgreSQLConnectionConfigs) async throws {
+    init(eventLoop loop: EventLoop, configs: ConnectionConfigs) async throws {
 
         let socketAddress: SocketAddress =
             switch configs.socketAddress {
@@ -23,7 +24,7 @@ final class PostgreSQLProtocolClient: @unchecked Sendable {
         let channel: any Channel
         let channelReady = loop.makePromise(of: Void.self)
         do {
-            let messageCodec = PostgreSQLMessageCodec()
+            let messageCodec = MessageCodec()
             var handlers: [ChannelHandler] = [
                 ByteToMessageHandler(messageCodec),
                 MessageToByteHandler(messageCodec),
@@ -85,10 +86,10 @@ final class PostgreSQLProtocolClient: @unchecked Sendable {
     }
 
     func receive() async throws -> PostgreSQLBackendMessage? {
-        return try await inbound.next()  // TODO: make it thread safe
+        return try await inbound.next()  // TODO: make it thread-safe
     }
 
-    private static func getTLSHandler(configs: PostgreSQLConnectionConfigs) throws
+    private static func getTLSHandler(configs: ConnectionConfigs) throws
         -> NIOSSLClientHandler?
     {
         guard configs.sslmode != .disable else {
@@ -124,7 +125,7 @@ final class PostgreSQLProtocolClient: @unchecked Sendable {
         return sslHandler
     }
 
-    private final class PostgreSQLMessageCodec: ByteToMessageDecoder, MessageToByteEncoder, Sendable {
+    private final class MessageCodec: ByteToMessageDecoder, MessageToByteEncoder, Sendable {
         typealias OutboundIn = PostgreSQLFrontendMessage
         typealias InboundOut = PostgreSQLBackendMessage
 

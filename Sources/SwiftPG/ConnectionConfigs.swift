@@ -1,17 +1,39 @@
 import Foundation
 import NIOSSL
 
-public struct PostgreSQLConnectionConfigs: Sendable {
+public struct ConnectionConfigs: Sendable {
 
-    let socketAddress: SocketAddress
-    let username: String
-    let password: String
-    let database: String
-    let sslmode: SSLMode
-    let sslcert: String?
-    let sslkey: String?
-    let sslrootcert: String?
-    let sslcrl: String?
+    var socketAddress: SocketAddress
+    var username: String
+    var password: String
+    var database: String
+    var sslmode: SSLMode
+    var sslcert: String?
+    var sslkey: String?
+    var sslrootcert: String?
+    var sslcrl: String?
+
+    init(
+        socketAddress: SocketAddress = .hostPort(host: "localhost", port: 5432),
+        username: String = "postgres",
+        password: String = "",
+        database: String = "postgres",
+        sslmode: SSLMode = .require,
+        sslcert: String? = nil,
+        sslkey: String? = nil,
+        sslrootcert: String? = nil,
+        sslcrl: String? = nil
+    ) {
+        self.socketAddress = socketAddress
+        self.username = username
+        self.password = password
+        self.database = database
+        self.sslmode = sslmode
+        self.sslcert = sslcert
+        self.sslkey = sslkey
+        self.sslrootcert = sslrootcert
+        self.sslcrl = sslcrl
+    }
 
     enum SocketAddress {
         case hostPort(host: String, port: Int)
@@ -25,7 +47,7 @@ public struct PostgreSQLConnectionConfigs: Sendable {
         case verifyFull = "verify-full"
     }
 
-    public static func fromDatabaseURL(_ databaseURL: String) throws -> PostgreSQLConnectionConfigs {
+    public static func fromDatabaseURL(_ databaseURL: String) throws -> ConnectionConfigs {
         guard let components = URLComponents(string: databaseURL) else {
             throw ClientError.configurationError("Invalid URL")
         }

@@ -7,7 +7,7 @@ import Testing
 
 final class PostgreSQLConnectionPoolTest {
     @Test func testPool() async throws {
-        let pool = PostgreSQLConnectionPool(
+        let pool = ConnectionPool(
             configuration: getPlainSaslConnectionConfigs(),
             maxConnections: 3
         )
@@ -17,7 +17,7 @@ final class PostgreSQLConnectionPoolTest {
         let _ = try await pool.acquire()
 
         // Pool is full
-        var conn4: PostgreSQLConnection? = nil
+        var conn4: Connection? = nil
         Task {
             conn4 = try await pool.acquire()
         }
@@ -31,7 +31,7 @@ final class PostgreSQLConnectionPoolTest {
     }
 
     @Test func testConcurrentQuery() async throws {
-        let pool = PostgreSQLConnectionPool(
+        let pool = ConnectionPool(
             configuration: getPlainSaslConnectionConfigs(),
             maxConnections: 3
         )

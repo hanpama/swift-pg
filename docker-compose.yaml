@@ -1,95 +1,21 @@
 services:
-  postgres_plain_trust:
-    image: postgres:17
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_HOST_AUTH_METHOD: trust
-    command:
-      [
-        "postgres",
-        "-c", "log_statement=all",
-        "-c", "log_connections=on",
-        "-c", "log_disconnections=on",
-        "-c", "log_duration=on",
-        "-c", "unix_socket_directories=/var/run/postgresql",
-      ]
+  postgres_17:
+    build:
+      context: Tools
+      dockerfile: postgres_17.dockerfile
     volumes:
-      - postgres_plain_trust_sockets:/var/run/postgresql
+      - ./certs:/certs/
+      - postgres_17:/var/run/postgresql
     ports:
-      - 6450:5432
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres"]
-      start_period: 5s
-      start_interval: 5s
-
-  postgres_plain_sasl:
-    image: postgres:17
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    command:
-      [
-        "postgres",
-        "-c", "log_statement=all",
-        "-c", "log_connections=on",
-        "-c", "log_disconnections=on",
-        "-c", "log_duration=on",
-        "-c", "unix_socket_directories=/var/run/postgresql",
-      ]
-    volumes:
-      - postgres_plain_sasl_sockets:/var/run/postgresql
-    ports:
-      - 6451:5432
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres"]
-      start_period: 5s
-      start_interval: 5s
-
-  postgres_tls_sasl:
-    image: postgres:17
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    volumes:
-      - ./certs:/certs
-    command:
-      [
-        "postgres",
-        "-c", "log_statement=all",
-        "-c", "log_connections=on",
-        "-c", "log_disconnections=on",
-        "-c", "log_duration=on",
-        "-c", "ssl=on",
-        "-c", "ssl_cert_file=/certs/server.crt",
-        "-c", "ssl_key_file=/certs/server.key",
-      ]
-    ports:
-      - 6452:5432
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres"]
-      start_period: 5s
-      start_interval: 5s
+      - 6453:5432
     depends_on:
-      openssl:
+      certs:
         condition: service_completed_successfully
 
-  openssl:
-    image: alpine:3.14 # Using a slightly newer alpine, but 3.14 should be fine too
-    command: >
-      sh -c "apk add --no-cache openssl &&
-        # 1. Create Root CA
-        openssl genrsa -out /certs/rootCA.key 2048 &&
-        openssl req -x509 -new -nodes -key /certs/rootCA.key -sha256 -days 1024 -out /certs/rootCA.crt -subj '/CN=Test Root CA' &&
-        # 2. Create Server Cert signed by Root CA
-        openssl genrsa -out /certs/server.key 2048 &&
-        openssl req -new -key /certs/server.key -out /certs/server.csr -subj '/CN=postgres_tls_sasl' &&
-        openssl x509 -req -in /certs/server.csr -CA /certs/rootCA.crt -CAkey /certs/rootCA.key -CAcreateserial -out /certs/server.crt -days 500 -sha256 &&
-        # 3. Create another Root CA for failing tests
-        openssl genrsa -out /certs/rootCA-fail.key 2048 &&
-        openssl req -x509 -new -nodes -key /certs/rootCA-fail.key -sha256 -days 1024 -out /certs/rootCA-fail.crt -subj '/CN=Test Failing Root CA' &&
-        # Set permissions for server key
-        chmod 600 /certs/server.key &&
-        chown 999:999 /certs/server.key" # Assuming postgres user ID is 999
+  certs:
+    build: 
+      context: Tools
+      dockerfile: certs.dockerfile
     volumes:
       - ./certs:/certs
 
@@ -97,27 +23,16 @@ services:
     image: swift:6.1.0
     volumes:
       - .:/app
-      - postgres_plain_trust_sockets:/postgres_plain_trust_sockets
-      - postgres_plain_sasl_sockets:/postgres_plain_sasl_sockets
+      - postgres_17:/postgres_17
     working_dir: /app
     command: ["swift", "test"]
     environment:
-      - PG_PLAIN_TRUST_HOST=postgres_plain_trust
-      - PG_PLAIN_TRUST_PORT=5432
-      - PG_PLAIN_SASL_HOST=postgres_plain_sasl
-      - PG_PLAIN_SASL_PORT=5432
-      - PG_TLS_SASL_HOST=postgres_tls_sasl
-      - PG_TLS_SASL_PORT=5432
-      - PG_PLAIN_TRUST_UNIX_SOCKET_DIR=/postgres_plain_trust_sockets
-      - PG_PLAIN_SASL_UNIX_SOCKET_DIR=/postgres_plain_sasl_sockets
+      - POSTGRES_17_HOST=postgres_plain_trust
+      - POSTGRES_17_PORT=5432
+      - POSTGRES_17_SOCKET=/postgres_17
     depends_on:
-      postgres_plain_trust:
+      postgres_17:
         condition: service_healthy
-      postgres_plain_sasl:
-        condition: service_healthy
-      postgres_tls_sasl:
-        condition: service_healthy
-  
+
 volumes:
-  postgres_plain_trust_sockets:
-  postgres_plain_sasl_sockets:
+  postgres_17:
