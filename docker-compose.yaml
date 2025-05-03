@@ -1,19 +1,86 @@
 services:
-  postgres_17:
+  postgres17:
     build:
       context: Tools
-      dockerfile: postgres_17.dockerfile
+      dockerfile: postgres17.dockerfile
     volumes:
       - ./certs:/certs/
-      - postgres_17:/var/run/postgresql
+      - postgres17:/var/run/postgresql
     ports:
       - 6453:5432
+    networks:
+      default:
+        aliases:
+          - postgres17.goodcn
+          - postgres17.badcn
     depends_on:
       certs:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+    command:
+      [
+        "postgres",
+        "-c",
+        "log_statement=all",
+        "-c",
+        "log_connections=on",
+        "-c",
+        "log_disconnections=on",
+        "-c",
+        "log_duration=on",
+        "-c",
+        "ssl=on",
+        "-c",
+        "ssl_cert_file=/certs/root_ca_1_postgres17.goodcn.crt.pem",
+        "-c",
+        "ssl_key_file=/certs/root_ca_1_postgres17.goodcn.key.pem",
+        "-c",
+        "ssl_ca_file=/certs/root_ca_1.crt.pem",
+      ]
+
+  postgres16:
+    build:
+      context: Tools
+      dockerfile: postgres16.dockerfile
+    volumes:
+      - ./certs:/certs/
+      - postgres16:/var/run/postgresql
+    ports:
+      - 6454:5432
+    networks:
+      default:
+        aliases:
+          - postgres16.goodcn
+          - postgres16.badcn
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+    command:
+      [
+        "postgres",
+        "-c",
+        "log_statement=all",
+        "-c",
+        "log_connections=on",
+        "-c",
+        "log_disconnections=on",
+        "-c",
+        "log_duration=on",
+        "-c",
+        "ssl=on",
+        "-c",
+        "ssl_cert_file=/certs/root_ca_1_postgres16.goodcn.crt.pem",
+        "-c",
+        "ssl_key_file=/certs/root_ca_1_postgres16.goodcn.key.pem",
+        "-c",
+        "ssl_ca_file=/certs/root_ca_1.crt.pem",
+      ]
 
   certs:
-    build: 
+    build:
       context: Tools
       dockerfile: certs.dockerfile
     volumes:
@@ -23,16 +90,30 @@ services:
     image: swift:6.1.0
     volumes:
       - .:/app
-      - postgres_17:/postgres_17
+      - postgres17:/postgres17
+      - postgres16:/postgres16
+      - ./certs:/certs
     working_dir: /app
-    command: ["swift", "test"]
+    command: [ "tail", "-f", "/dev/null"]
     environment:
-      - POSTGRES_17_HOST=postgres_plain_trust
+      - POSTGRES_17_HOST=postgres17
+      - POSTGRES_17_HOST_GOOD_CN=postgres17.goodcn
+      - POSTGRES_17_HOST_BAD_CN=postgres17.badcn
       - POSTGRES_17_PORT=5432
-      - POSTGRES_17_SOCKET=/postgres_17
+      - POSTGRES_17_SOCKET=/postgres17
+      - POSTGRES_16_HOST=postgres16
+      - POSTGRES_16_HOST_GOOD_CN=postgres16.goodcn
+      - POSTGRES_16_HOST_BAD_CN=postgres16.badcn
+      - POSTGRES_16_PORT=5432
+      - POSTGRES_16_SOCKET=/postgres16
+      - ROOT_CERT=/certs/root_ca_1.crt.pem
+      - ROOT_CERT_UNKNOWN=/certs/root_ca_2.crt.pem
     depends_on:
-      postgres_17:
+      postgres17:
+        condition: service_healthy
+      postgres16:
         condition: service_healthy
 
 volumes:
-  postgres_17:
+  postgres17:
+  postgres16:

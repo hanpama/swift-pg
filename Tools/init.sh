@@ -35,18 +35,17 @@ EOSQL
 rm /var/lib/postgresql/data/pg_hba.conf
 
 cat <<EOF >> /var/lib/postgresql/data/pg_hba.conf
-local       all        postgres                                      trust
-local       all        local_trust                                   trust
-local       all        local_reject                                  trust
-local       all        local_scram_sha_256                           trust
+local       all        postgres                                   trust
+local       all        local_trust                                trust
+local       all        local_reject                               trust
+local       all        local_scram_sha_256                        trust
 host        all        host_trust                     0.0.0.0/0   trust
 host        all        host_reject                    0.0.0.0/0   reject
 host        all        host_scram_sha_256             0.0.0.0/0   scram-sha-256
 hostssl     all        hostssl_trust                  0.0.0.0/0   trust
 hostssl     all        hostssl_reject                 0.0.0.0/0   reject
 hostssl     all        hostssl_scram_sha_256          0.0.0.0/0   scram-sha-256
-# hostssl     all        hostssl_clientcert_verify_ca   0.0.0.0/0   cert   clientcert=verify-ca
-# hostssl     all        hostssl_clientcert_verify_full 0.0.0.0/0   cert   clientcert=verify-full
+hostssl     all        hostssl_clientcert_verify_full 0.0.0.0/0   cert clientcert=verify-full
 hostnossl   all        hostnossl_trust                0.0.0.0/0   trust
 hostnossl   all        hostnossl_reject               0.0.0.0/0   reject
 hostnossl   all        hostnossl_scram_sha_256        0.0.0.0/0   scram-sha-256

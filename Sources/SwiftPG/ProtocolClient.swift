@@ -1,6 +1,4 @@
-// import AsyncAlgorithms
 import NIO
-import NIOConcurrencyHelpers
 import NIOSSL
 import NIOTLS
 
@@ -10,6 +8,7 @@ final class ProtocolClient: @unchecked Sendable {
     private var inbound: Inbound.AsyncIterator
     private typealias Outbound = NIOAsyncChannelOutboundWriter<PostgreSQLFrontendMessage>
     private typealias Inbound = NIOAsyncChannelInboundStream<PostgreSQLBackendMessage>
+    private let messageCodec = MessageCodec()
 
     init(eventLoop loop: EventLoop, configs: ConnectionConfigs) async throws {
 
@@ -24,20 +23,20 @@ final class ProtocolClient: @unchecked Sendable {
         let channel: any Channel
         let channelReady = loop.makePromise(of: Void.self)
         do {
-            let messageCodec = MessageCodec()
-            var handlers: [ChannelHandler] = [
+            channel = try await ClientBootstrap(group: loop).connect(to: socketAddress).get()
+            if let sslHandler = try Self.getTLSHandler(configs: configs) {
+                // https://www.postgresql.org/docs/16/protocol-flow.html#PROTOCOL-FLOW-SSL
+                // var sslRequestMessage = ByteBufferAllocator().buffer(capacity: 8)
+                // sslRequestMessage.writeInteger(Int32(8))
+                // sslRequestMessage.writeInteger(Int32(80_877_103))
+                // try await channel.writeAndFlush(sslRequestMessage)
+                try await channel.pipeline.addHandler(sslHandler)
+            }
+            try await channel.pipeline.addHandlers([
                 ByteToMessageHandler(messageCodec),
                 MessageToByteHandler(messageCodec),
                 ReadyForStartupHandler(promise: channelReady, tls: configs.sslmode != .disable),
-            ]
-            let sslHandler = try Self.getTLSHandler(configs: configs)
-            if let sslHandler = sslHandler {
-                handlers.insert(sslHandler, at: 0)
-            }
-
-            channel = try await ClientBootstrap(group: loop)
-                .channelInitializer { $0.pipeline.addHandlers(handlers) }
-                .connect(to: socketAddress).get()
+            ])
         } catch {
             channelReady.fail(error)
             throw error
@@ -107,15 +106,13 @@ final class ProtocolClient: @unchecked Sendable {
         }
 
         if let sslcert = configs.sslcert {
-            let certs = try NIOSSLCertificate.fromPEMFile(sslcert)
-            tlsConfig.certificateChain = certs.map { .certificate($0) }
+            tlsConfig.certificateChain = [.certificate(sslcert)]
         }
         if let sslkey = configs.sslkey {
-            let privateKey = try NIOSSLPrivateKey(file: sslkey, format: .pem)
-            tlsConfig.privateKey = .privateKey(privateKey)
+            tlsConfig.privateKey = .privateKey(sslkey)
         }
         if let sslrootcert = configs.sslrootcert {
-            tlsConfig.additionalTrustRoots = [.file(sslrootcert)]
+            tlsConfig.additionalTrustRoots = [sslrootcert]
         }
         guard case let .hostPort(host, _) = configs.socketAddress else {
             throw ClientError.configurationError("Host is required for TLS connections")

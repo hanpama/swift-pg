@@ -8,10 +8,10 @@ public struct ConnectionConfigs: Sendable {
     var password: String
     var database: String
     var sslmode: SSLMode
-    var sslcert: String?
-    var sslkey: String?
-    var sslrootcert: String?
-    var sslcrl: String?
+    var sslcert: NIOSSLCertificate?
+    var sslkey: NIOSSLPrivateKey?
+    var sslrootcert: NIOSSLAdditionalTrustRoots?
+    // var sslcrl: String?
 
     init(
         socketAddress: SocketAddress = .hostPort(host: "localhost", port: 5432),
@@ -19,10 +19,10 @@ public struct ConnectionConfigs: Sendable {
         password: String = "",
         database: String = "postgres",
         sslmode: SSLMode = .require,
-        sslcert: String? = nil,
-        sslkey: String? = nil,
-        sslrootcert: String? = nil,
-        sslcrl: String? = nil
+        sslcert: NIOSSLCertificate? = nil,
+        sslkey: NIOSSLPrivateKey? = nil,
+        sslrootcert: NIOSSLAdditionalTrustRoots? = nil,
+        // sslcrl: String? = nil
     ) {
         self.socketAddress = socketAddress
         self.username = username
@@ -32,7 +32,7 @@ public struct ConnectionConfigs: Sendable {
         self.sslcert = sslcert
         self.sslkey = sslkey
         self.sslrootcert = sslrootcert
-        self.sslcrl = sslcrl
+        // self.sslcrl = sslcrl
     }
 
     enum SocketAddress {
@@ -98,10 +98,28 @@ public struct ConnectionConfigs: Sendable {
             throw ClientError.configurationError("Invalid sslmode: \(sslmodeQuery)")
         }
 
-        let sslcert = components.queryItems?.first(where: { $0.name == "sslcert" })?.value
-        let sslkey = components.queryItems?.first(where: { $0.name == "sslkey" })?.value
-        let sslrootcert = components.queryItems?.first(where: { $0.name == "sslrootcert" })?.value
-        let sslcrl = components.queryItems?.first(where: { $0.name == "sslcrl" })?.value
+        let sslcertString = components.queryItems?.first(where: { $0.name == "sslcert" })?.value
+        let sslkeyString = components.queryItems?.first(where: { $0.name == "sslkey" })?.value
+        let sslrootcertString = components.queryItems?.first(where: { $0.name == "sslrootcert" })?.value
+        // let sslcrlString = components.queryItems?.first(where: { $0.name == "sslcrl" })?.value
+
+        var sslcert: NIOSSLCertificate?
+        var sslkey: NIOSSLPrivateKey?
+        var sslrootcert: NIOSSLAdditionalTrustRoots?
+        // let sslcrl: String?
+
+        if let sslcertString = sslcertString {
+            let certs = try NIOSSLCertificate.fromPEMFile(sslcertString)
+            sslcert = certs.first
+        }
+        if let sslkeyString = sslkeyString {
+            let privateKey = try NIOSSLPrivateKey(file: sslkeyString, format: .pem)
+            sslkey = privateKey
+        }
+        if let sslrootcertString = sslrootcertString {
+            let certs = try NIOSSLCertificate.fromPEMFile(sslrootcertString)
+            sslrootcert = .file(sslrootcertString)
+        }
 
         return .init(
             socketAddress: socketAddress,
@@ -112,7 +130,7 @@ public struct ConnectionConfigs: Sendable {
             sslcert: sslcert,
             sslkey: sslkey,
             sslrootcert: sslrootcert,
-            sslcrl: sslcrl
+            // sslcrl: sslcrl
         )
     }
 }

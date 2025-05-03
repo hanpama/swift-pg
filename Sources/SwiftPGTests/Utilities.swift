@@ -4,54 +4,123 @@ import NIOSSL
 
 @testable import SwiftPG
 
-// enum TestPostgreSQLVersion {
-//     case postgres17(host: String, port: Int, socket: String)
-// }
+let POSTGRES_17_HOST = ProcessInfo.processInfo.environment["POSTGRES_17_HOST"]
+let POSTGRES_17_HOST_GOOD_CN = ProcessInfo.processInfo.environment["POSTGRES_17_HOST_GOOD_CN"]
+let POSTGRES_17_HOST_BAD_CN = ProcessInfo.processInfo.environment["POSTGRES_17_HOST_BAD_CN"]
+let POSTGRES_17_PORT = ProcessInfo.processInfo.environment["POSTGRES_17_PORT"]
+let POSTGRES_17_SOCKET = ProcessInfo.processInfo.environment["POSTGRES_17_SOCKET"]
 
-// func getPostgres17Host() -> String {
-//     return ProcessInfo.processInfo.environment["POSTGRES_17_HOST"] ?? "localhost"
-// }
-// func getPostgres17HostPort() -> ConnectionConfigs.SocketAddress {
-//     let host = ProcessInfo.processInfo.environment["POSTGRES_17_HOST"] ?? "localhost"
-//     let port = Int(ProcessInfo.processInfo.environment["POSTGRES_17_PORT"] ?? "6450") ?? 6450
-//     return .hostPort(host: host, port: port)
-// }
-// func getPostgres17UnixSocket() -> ConnectionConfigs.SocketAddress {
-//     let socket = ProcessInfo.processInfo.environment["POSTGRES_17_SOCKET"]!
-//     return .unixDomainSocket(directory: socket, port: 5432)
-// }
+let POSTGRES_16_HOST = ProcessInfo.processInfo.environment["POSTGRES_16_HOST"]
+let POSTGRES_16_HOST_GOOD_CN = ProcessInfo.processInfo.environment["POSTGRES_16_HOST_GOOD_CN"]
+let POSTGRES_16_HOST_BAD_CN = ProcessInfo.processInfo.environment["POSTGRES_16_HOST_BAD_CN"]
+let POSTGRES_16_PORT = ProcessInfo.processInfo.environment["POSTGRES_16_PORT"]
+let POSTGRES_16_SOCKET = ProcessInfo.processInfo.environment["POSTGRES_16_SOCKET"]
+
+let ROOT_CERT = ProcessInfo.processInfo.environment["ROOT_CERT"]
+let ROOT_CERT_UNKNOWN = ProcessInfo.processInfo.environment["ROOT_CERT_UNKNOWN"]
 
 struct TestEnvironment {
     let host: String
     let port: Int
     let socket: String?
+    let rootCert: String?
+    let hostUnknownCn: String?
 }
 
-let environments: [TestEnvironment] = [
+let postgres17HostPort =
+    if let host = POSTGRES_17_HOST, let port = POSTGRES_17_PORT {
+        ConnectionConfigs.SocketAddress.hostPort(host: host, port: Int(port) ?? 6453)
+    } else {
+        ConnectionConfigs.SocketAddress.hostPort(host: "localhost", port: 6453)
+    }
+
+let postgres16HostPort =
+    if let host = POSTGRES_16_HOST, let port = POSTGRES_16_PORT {
+        ConnectionConfigs.SocketAddress.hostPort(host: host, port: Int(port) ?? 6454)
+    } else {
+        ConnectionConfigs.SocketAddress.hostPort(host: "localhost", port: 6454)
+    }
+
+let postgres17GoodCnHostPort: ConnectionConfigs.SocketAddress? =
+    if let host = POSTGRES_17_HOST_GOOD_CN {
+        ConnectionConfigs.SocketAddress.hostPort(host: host, port: Int(POSTGRES_17_PORT!)!)
+    } else {
+        nil
+    }
+let postgres17BadCnHostPort: ConnectionConfigs.SocketAddress? =
+    if let host = POSTGRES_17_HOST_BAD_CN {
+        ConnectionConfigs.SocketAddress.hostPort(host: host, port: Int(POSTGRES_17_PORT!)!)
+    } else {
+        nil
+    }
+let postgres16GoodCnHostPort: ConnectionConfigs.SocketAddress? =
+    if let host = POSTGRES_16_HOST_GOOD_CN {
+        ConnectionConfigs.SocketAddress.hostPort(host: host, port: Int(POSTGRES_16_PORT!)!)
+    } else {
+        nil
+    }
+let postgres16BadCnHostPort: ConnectionConfigs.SocketAddress? =
+    if let host = POSTGRES_16_HOST_BAD_CN {
+        ConnectionConfigs.SocketAddress.hostPort(host: host, port: Int(POSTGRES_16_PORT!)!)
+    } else {
+        nil
+    }
+
+// let pg17Host = ProcessInfo.processInfo.environment["POSTGRES_17_HOST"] ?? "localhost"
+// let pg17Port = Int(ProcessInfo.processInfo.environment["POSTGRES_17_PORT"] ?? "6453") ?? 6453
+// let pg16Host = ProcessInfo.processInfo.environment["POSTGRES_16_HOST"] ?? "localhost"
+// let pg16Port = Int(ProcessInfo.processInfo.environment["POSTGRES_16_PORT"] ?? "6454") ?? 6454
+
+// let postgres17HostPort = ConnectionConfigs.SocketAddress.hostPort(
+//     host: ProcessInfo.processInfo.environment["POSTGRES_17_HOST"] ?? "localhost",
+//     port: Int(ProcessInfo.processInfo.environment["POSTGRES_17_PORT"] ?? "6453") ?? 6453
+// )
+// let postgres16HostPort = ConnectionConfigs.SocketAddress.hostPort(
+//     host: ProcessInfo.processInfo.environment["POSTGRES_16_HOST"] ?? "localhost",
+//     port: Int(ProcessInfo.processInfo.environment["POSTGRES_16_PORT"] ?? "6454") ?? 6454
+// )
+
+let testEnvs: [TestEnvironment] = [
     .init(
         host: ProcessInfo.processInfo.environment["POSTGRES_17_HOST"] ?? "localhost",
         port: Int(ProcessInfo.processInfo.environment["POSTGRES_17_PORT"] ?? "6453")!,
-        socket: ProcessInfo.processInfo.environment["POSTGRES_17_SOCKET"]
-    )
+        socket: ProcessInfo.processInfo.environment["POSTGRES_17_SOCKET"],
+        rootCert: ProcessInfo.processInfo.environment["POSTGRES_17_ROOT_CERT"],
+        hostUnknownCn: ProcessInfo.processInfo.environment["POSTGRES_17_HOST_UNKNOWN_CN"],
+    ),
+    .init(
+        host: ProcessInfo.processInfo.environment["POSTGRES_16_HOST"] ?? "localhost",
+        port: Int(ProcessInfo.processInfo.environment["POSTGRES_16_PORT"] ?? "6454")!,
+        socket: ProcessInfo.processInfo.environment["POSTGRES_16_SOCKET"],
+        rootCert: ProcessInfo.processInfo.environment["POSTGRES_16_ROOT_CERT"],
+        hostUnknownCn: ProcessInfo.processInfo.environment["POSTGRES_16_HOST_UNKNOWN_CN"],
+    ),
 ]
 
-func getLocalTrustConnectionConfigs(_ env: TestEnvironment) -> ConnectionConfigs? {
-    guard let socketDir = env.socket else {
+func getLocalTrustConnectionConfigsList() -> [ConnectionConfigs] {
+    let configsList: [ConnectionConfigs?] = testEnvs.map { env in
+        if let socket = env.socket {
+            return .init(
+                socketAddress: .unixDomainSocket(directory: socket, port: env.port),
+                username: "local_trust",
+                password: "a1~!@#$%^&*()_+",
+                sslmode: .disable,
+            )
+        }
         return nil
     }
-    return .init(
-        socketAddress: .unixDomainSocket(directory: socketDir, port: 5432),
-        username: "local_trust",
-        sslmode: .disable,
-    )
+    return configsList.compactMap { $0 }
 }
 
-func getHostTrustConnectionConfigs(_ env: TestEnvironment) -> ConnectionConfigs {
-    return .init(
-        socketAddress: .hostPort(host: env.host, port: env.port),
-        username: "host_trust",
-        sslmode: .disable,
-    )
+func getHostTrustConnectionConfigsList() -> [ConnectionConfigs] {
+    return testEnvs.map { env in
+        return .init(
+            socketAddress: .hostPort(host: env.host, port: env.port),
+            username: "host_trust",
+            password: "a1~!@#$%^&*()_+",
+            sslmode: .disable
+        )
+    }
 }
 
 // func
@@ -78,10 +147,6 @@ func getPlainTrustConnectionConfigs() -> ConnectionConfigs {
         password: "postgres",
         database: "postgres",
         sslmode: .disable,
-        sslcert: nil,
-        sslkey: nil,
-        sslrootcert: nil,
-        sslcrl: nil
     )
 }
 
@@ -92,10 +157,6 @@ func getPlainSaslConnectionConfigs() -> ConnectionConfigs {
         password: "postgres",
         database: "postgres",
         sslmode: .disable,
-        sslcert: nil,
-        sslkey: nil,
-        sslrootcert: nil,
-        sslcrl: nil
     )
 }
 

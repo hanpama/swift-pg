@@ -16,23 +16,18 @@ def main():
         {
             "root": "root_ca_1",
             "children": [
-                "postgres_17",
-                "postgres_16",
-                "postgres_15",
+                "postgres17.goodcn",
+                "postgres16.goodcn",
+                "postgres15.goodcn",
                 "hostssl_clientcert_verify_ca",
                 "hostssl_clientcert_verify_full",
-                "unknown",
             ],
         },
         {
             "root": "root_ca_2",
             "children": [
-                "postgres_17",
-                "postgres_16",
-                "postgres_15",
                 "hostssl_clientcert_verify_ca",
                 "hostssl_clientcert_verify_full",
-                "unknown",
             ],
         },
     ]
