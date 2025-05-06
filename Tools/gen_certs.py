@@ -56,9 +56,16 @@ def main():
             with open(f"{chain['root']}_{child}.crt.pem", "wb") as f:
                 f.write(child_cert_bytes)
 
-    os.system("chmod 600 /certs/*.key.pem")
-    os.system("chmod 600 /certs/*.crt.pem")
-    os.system("chown 999:999 /certs/*.key")
+    for chain in chains:
+        os.chown(f"{chain['root']}.key.pem", 999, 999)
+        os.chown(f"{chain['root']}.crt.pem", 999, 999)
+        os.chmod(f"{chain['root']}.key.pem", 0o600)
+        os.chmod(f"{chain['root']}.crt.pem", 0o644)
+        for child in chain["children"]:
+            os.chown(f"{chain['root']}_{child}.key.pem", 999, 999)
+            os.chown(f"{chain['root']}_{child}.crt.pem", 999, 999)
+            os.chmod(f"{chain['root']}_{child}.key.pem", 0o600)
+            os.chmod(f"{chain['root']}_{child}.crt.pem", 0o644)
 
 
 def _create_key_and_csr(common_name):
