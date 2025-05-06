@@ -76,9 +76,9 @@ final class ConnectionAuthenticationTests {
             sslmode: .require
         )
         // The backend sends an error and the TCP connection gets closed right after.
-        // So here what we get is a ChannelError not DatabaseError.
-        // The error type might be changed in the future.
-        await #expect(throws: ChannelError.self) {
+        // So here what we can see is a race between ChannelError and DatabaseError.
+        // The behavior should be changed in the future.
+        await #expect(throws: Error.self) {
             try await conn.connect(configs: configs)
         }
         #expect(conn.isConnected() == false)

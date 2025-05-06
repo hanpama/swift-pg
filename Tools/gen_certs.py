@@ -57,7 +57,6 @@ def main():
                 f.write(child_cert_bytes)
 
     os.system("chmod 600 /certs/*.key.pem")
-    # os.system("chown 999:999 /certs/*.key")
 
 
 def _create_key_and_csr(common_name):
