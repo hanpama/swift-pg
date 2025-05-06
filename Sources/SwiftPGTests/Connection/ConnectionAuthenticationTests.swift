@@ -109,7 +109,13 @@ final class ConnectionAuthenticationTests {
         #expect(conn.isConnected() == false)
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort].compactMap { $0 })
+    @Test(
+        arguments: [
+            postgres17HostPort,
+            postgres16HostPort,
+            postgres17UnixSocket,
+            postgres17UnixSocket,
+        ].compactMap { $0 })
     func connectFailureInvalidDatabase(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let conn = Connection()
         let configs: ConnectionConfigs = .init(
@@ -128,7 +134,13 @@ final class ConnectionAuthenticationTests {
         #expect(conn.isConnected() == false)
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort].compactMap { $0 })
+    @Test(
+        arguments: [
+            postgres17HostPort,
+            postgres16HostPort,
+            postgres17UnixSocket,
+            postgres17UnixSocket,
+        ].compactMap { $0 })
     func connectFailureInvalidUsername(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let conn = Connection()
         let configs: ConnectionConfigs = .init(

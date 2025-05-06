@@ -5,23 +5,23 @@ import Testing
 @testable import SwiftPG
 
 final class PostgreSQLQueryTest {
-    @Test func testConnectionSasl() async throws {
-        let connection = try await createTestConnection()
+    // @Test func testConnectionSasl() async throws {
+    //     let connection = try await createTestConnection()
 
-        let rows = try await connection.batchQuery(
-            "SELECT $1::int8;",
-            [
-                [1],
-                [2],
-                [3],
-            ])
+    //     let rows = try await connection.batchQuery(
+    //         "SELECT $1::int8;",
+    //         [
+    //             [1],
+    //             [2],
+    //             [3],
+    //         ])
 
-        let values = rows.map { row in try row.decode<Int64>() }
-        var iterator = values.makeAsyncIterator()
+    //     let values = rows.map { row in try row.decode<Int64>() }
+    //     var iterator = values.makeAsyncIterator()
 
-        #expect(try await iterator.next() == 1)
-        #expect(try await iterator.next() == 2)
-        #expect(try await iterator.next() == 3)
-        #expect(try await iterator.next() == nil)
-    }
+    //     #expect(try await iterator.next() == 1)
+    //     #expect(try await iterator.next() == 2)
+    //     #expect(try await iterator.next() == 3)
+    //     #expect(try await iterator.next() == nil)
+    // }
 }

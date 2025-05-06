@@ -77,7 +77,10 @@ public final actor ConnectionPool {
     public func execute(_ sql: String, _ params: [PostgreSQLEncodable] = []) async throws {
         let connection = try await acquire()
         try await connection.execute(sql, params)
-        await release(connection)
+        Task {
+            do { try await connection.waitCurrentTask() }
+            await release(connection)
+        }
     }
 
     public func batchQuery(_ sql: String, _ params: [[PostgreSQLEncodable]] = []) async throws
@@ -86,7 +89,7 @@ public final actor ConnectionPool {
         let connection = try await acquire()
         let rows = try await connection.batchQuery(sql, params)
         Task {
-            try await connection.waitCurrentTask()
+            do { try await connection.waitCurrentTask() }
             await release(connection)
         }
         return rows
