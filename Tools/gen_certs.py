@@ -57,6 +57,7 @@ def main():
                 f.write(child_cert_bytes)
 
     os.system("chmod 600 /certs/*.key.pem")
+    os.system("chmod 600 /certs/*.crt.pem")
     os.system("chown 999:999 /certs/*.key")
 
 
