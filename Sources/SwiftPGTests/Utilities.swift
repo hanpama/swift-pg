@@ -18,6 +18,10 @@ let POSTGRES_16_SOCKET = ProcessInfo.processInfo.environment["POSTGRES_16_SOCKET
 
 let ROOT_CERT = ProcessInfo.processInfo.environment["ROOT_CERT"]
 let ROOT_CERT_UNKNOWN = ProcessInfo.processInfo.environment["ROOT_CERT_UNKNOWN"]
+let CLIENT_CERT = ProcessInfo.processInfo.environment["CLIENT_CERT"]
+let CLIENT_KEY = ProcessInfo.processInfo.environment["CLIENT_KEY"]
+let CLIENT_CERT_UNKNOWN = ProcessInfo.processInfo.environment["CLIENT_CERT_UNKNOWN"]
+let CLIENT_KEY_UNKNOWN = ProcessInfo.processInfo.environment["CLIENT_KEY_UNKNOWN"]
 
 struct TestEnvironment {
     let host: String
@@ -39,6 +43,20 @@ let postgres16HostPort =
         ConnectionConfigs.SocketAddress.hostPort(host: host, port: Int(port) ?? 6454)
     } else {
         ConnectionConfigs.SocketAddress.hostPort(host: "localhost", port: 6454)
+    }
+
+let postgres17UnixSocket: ConnectionConfigs.SocketAddress? =
+    if let socket = POSTGRES_17_SOCKET {
+        ConnectionConfigs.SocketAddress.unixDomainSocket(directory: socket, port: 5432)
+    } else {
+        nil
+    }
+
+let postgres16UnixSocket: ConnectionConfigs.SocketAddress? =
+    if let socket = POSTGRES_16_SOCKET {
+        ConnectionConfigs.SocketAddress.unixDomainSocket(directory: socket, port: 5432)
+    } else {
+        nil
     }
 
 let postgres17GoodCnHostPort: ConnectionConfigs.SocketAddress? =
@@ -65,63 +83,6 @@ let postgres16BadCnHostPort: ConnectionConfigs.SocketAddress? =
     } else {
         nil
     }
-
-// let pg17Host = ProcessInfo.processInfo.environment["POSTGRES_17_HOST"] ?? "localhost"
-// let pg17Port = Int(ProcessInfo.processInfo.environment["POSTGRES_17_PORT"] ?? "6453") ?? 6453
-// let pg16Host = ProcessInfo.processInfo.environment["POSTGRES_16_HOST"] ?? "localhost"
-// let pg16Port = Int(ProcessInfo.processInfo.environment["POSTGRES_16_PORT"] ?? "6454") ?? 6454
-
-// let postgres17HostPort = ConnectionConfigs.SocketAddress.hostPort(
-//     host: ProcessInfo.processInfo.environment["POSTGRES_17_HOST"] ?? "localhost",
-//     port: Int(ProcessInfo.processInfo.environment["POSTGRES_17_PORT"] ?? "6453") ?? 6453
-// )
-// let postgres16HostPort = ConnectionConfigs.SocketAddress.hostPort(
-//     host: ProcessInfo.processInfo.environment["POSTGRES_16_HOST"] ?? "localhost",
-//     port: Int(ProcessInfo.processInfo.environment["POSTGRES_16_PORT"] ?? "6454") ?? 6454
-// )
-
-let testEnvs: [TestEnvironment] = [
-    .init(
-        host: ProcessInfo.processInfo.environment["POSTGRES_17_HOST"] ?? "localhost",
-        port: Int(ProcessInfo.processInfo.environment["POSTGRES_17_PORT"] ?? "6453")!,
-        socket: ProcessInfo.processInfo.environment["POSTGRES_17_SOCKET"],
-        rootCert: ProcessInfo.processInfo.environment["POSTGRES_17_ROOT_CERT"],
-        hostUnknownCn: ProcessInfo.processInfo.environment["POSTGRES_17_HOST_UNKNOWN_CN"],
-    ),
-    .init(
-        host: ProcessInfo.processInfo.environment["POSTGRES_16_HOST"] ?? "localhost",
-        port: Int(ProcessInfo.processInfo.environment["POSTGRES_16_PORT"] ?? "6454")!,
-        socket: ProcessInfo.processInfo.environment["POSTGRES_16_SOCKET"],
-        rootCert: ProcessInfo.processInfo.environment["POSTGRES_16_ROOT_CERT"],
-        hostUnknownCn: ProcessInfo.processInfo.environment["POSTGRES_16_HOST_UNKNOWN_CN"],
-    ),
-]
-
-func getLocalTrustConnectionConfigsList() -> [ConnectionConfigs] {
-    let configsList: [ConnectionConfigs?] = testEnvs.map { env in
-        if let socket = env.socket {
-            return .init(
-                socketAddress: .unixDomainSocket(directory: socket, port: env.port),
-                username: "local_trust",
-                password: "a1~!@#$%^&*()_+",
-                sslmode: .disable,
-            )
-        }
-        return nil
-    }
-    return configsList.compactMap { $0 }
-}
-
-func getHostTrustConnectionConfigsList() -> [ConnectionConfigs] {
-    return testEnvs.map { env in
-        return .init(
-            socketAddress: .hostPort(host: env.host, port: env.port),
-            username: "host_trust",
-            password: "a1~!@#$%^&*()_+",
-            sslmode: .disable
-        )
-    }
-}
 
 // func
 

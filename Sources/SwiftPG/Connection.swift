@@ -25,9 +25,15 @@ public final class Connection: Sendable {
         protocolCiientBox.withLockedValue { $0 = protocolClient }
 
         try await send(.startupMessage(configs.username, configs.database))
-        try await authenticate(username: configs.username, password: configs.password)
-        try await waitKeyData()
-        try await readyForQuery()
+        do {
+            try await authenticate(username: configs.username, password: configs.password)
+            try await waitKeyData()
+            try await readyForQuery()
+        } catch {
+            try await protocolClient.close()
+            protocolCiientBox.withLockedValue { $0 = nil }
+            throw error
+        }
     }
 
     public func close() async throws {
@@ -327,7 +333,7 @@ public final class Connection: Sendable {
     private func receive() async throws -> PostgreSQLBackendMessage {
         switch try await getProtocolClient().receive() {
         case .some(let message):
-            print("Received message: \(message)")
+            // print("Received message: \(message)")
             return message
         case .none:
             throw ClientError.connectionError("Connection closed")

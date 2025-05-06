@@ -19,15 +19,13 @@ def main():
                 "postgres17.goodcn",
                 "postgres16.goodcn",
                 "postgres15.goodcn",
-                "hostssl_clientcert_verify_ca",
-                "hostssl_clientcert_verify_full",
+                "user_cert",
             ],
         },
         {
             "root": "root_ca_2",
             "children": [
-                "hostssl_clientcert_verify_ca",
-                "hostssl_clientcert_verify_full",
+                "user_cert",
             ],
         },
     ]

@@ -108,6 +108,10 @@ services:
       - POSTGRES_16_SOCKET=/postgres16
       - ROOT_CERT=/certs/root_ca_1.crt.pem
       - ROOT_CERT_UNKNOWN=/certs/root_ca_2.crt.pem
+      - CLIENT_CERT=/certs/root_ca_1_user_cert.crt.pem
+      - CLIENT_KEY=/certs/root_ca_1_user_cert.key.pem
+      - CLIENT_CERT_UNKNOWN=/certs/root_ca_2_user_cert.crt.pem
+      - CLIENT_KEY_UNKNOWN=/certs/root_ca_2_user_cert.key.pem
     depends_on:
       postgres17:
         condition: service_healthy

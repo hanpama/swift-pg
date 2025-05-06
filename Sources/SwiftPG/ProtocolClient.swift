@@ -22,21 +22,20 @@ final class ProtocolClient: @unchecked Sendable {
 
         let channel: any Channel
         let channelReady = loop.makePromise(of: Void.self)
+        var handlers: [ChannelHandler] = [
+            ByteToMessageHandler(messageCodec),
+            MessageToByteHandler(messageCodec),
+        ]
+        if let sslHandler = try Self.getTLSHandler(configs: configs) {
+            handlers.insert(sslHandler, at: 0)
+        }
+        handlers.append(ReadyForStartupHandler(promise: channelReady, tls: configs.sslmode != .disable))
         do {
-            channel = try await ClientBootstrap(group: loop).connect(to: socketAddress).get()
-            if let sslHandler = try Self.getTLSHandler(configs: configs) {
-                // https://www.postgresql.org/docs/16/protocol-flow.html#PROTOCOL-FLOW-SSL
-                // var sslRequestMessage = ByteBufferAllocator().buffer(capacity: 8)
-                // sslRequestMessage.writeInteger(Int32(8))
-                // sslRequestMessage.writeInteger(Int32(80_877_103))
-                // try await channel.writeAndFlush(sslRequestMessage)
-                try await channel.pipeline.addHandler(sslHandler)
-            }
-            try await channel.pipeline.addHandlers([
-                ByteToMessageHandler(messageCodec),
-                MessageToByteHandler(messageCodec),
-                ReadyForStartupHandler(promise: channelReady, tls: configs.sslmode != .disable),
-            ])
+            channel = try await ClientBootstrap(group: loop)
+                .channelInitializer { channel in
+                    channel.pipeline.addHandlers(handlers)
+                }
+                .connect(to: socketAddress).get()
         } catch {
             channelReady.fail(error)
             throw error
@@ -73,7 +72,9 @@ final class ProtocolClient: @unchecked Sendable {
     }
 
     func close() async throws {
-        try await channel.close()
+        if channel.isActive {
+            try await channel.close()
+        }
     }
 
     func isConnected() -> Bool {

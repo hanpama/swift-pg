@@ -542,7 +542,7 @@ public struct DatabaseErrorDetails: Sendable {
   let routine: String?
 }"""
 
-line_patt = re.compile(r"^([0-9A-F]{5})\s+([EW])\s+([A-Z_]+)\s+([a-z_]+)$")
+line_patt = re.compile(r"^([0-9A-Z]{5})\s+([EW])\s+(\w+)\s+(\w+)$")
 
 
 def parse_line(line) -> tuple | None:

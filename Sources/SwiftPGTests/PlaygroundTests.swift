@@ -4,7 +4,7 @@ import Testing
 
 @testable import SwiftPG
 
-final class PlaygroundTest {
+final class PlaygroundTests {
     @Test func testPlaygroundTest() async throws {
         let conn = Connection()
 

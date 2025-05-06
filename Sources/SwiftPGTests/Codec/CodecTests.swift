@@ -4,7 +4,7 @@ import Testing
 
 @testable import SwiftPG
 
-final class PostgreSQLCodecTest {
+final class CodecTests {
 
     // MARK: - Bool
 
