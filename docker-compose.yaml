@@ -116,11 +116,11 @@ services:
       - CLIENT_KEY=/certs/root_ca_1_user_cert.key.pem
       - CLIENT_CERT_UNKNOWN=/certs/root_ca_2_user_cert.crt.pem
       - CLIENT_KEY_UNKNOWN=/certs/root_ca_2_user_cert.key.pem
-    depends_on:
-      postgres17:
-        condition: service_healthy
-      postgres16:
-        condition: service_healthy
+    # depends_on:
+    #   postgres17:
+    #     condition: service_healthy
+    #   postgres16:
+    #     condition: service_healthy
 
 volumes:
   postgres17:
