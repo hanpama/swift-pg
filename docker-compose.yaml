@@ -98,7 +98,7 @@ services:
       - postgres16:/postgres16
       - ./certs:/certs
     working_dir: /app
-    command: [ "tail", "-f", "/dev/null"]
+    command: swift test
     environment:
       - POSTGRES_17_HOST=postgres17
       - POSTGRES_17_HOST_GOOD_CN=postgres17.goodcn
