@@ -1,17 +1,39 @@
 import Foundation
 import NIOSSL
 
-public struct PostgreSQLConnectionConfigs: Sendable {
+public struct ConnectionConfigs: Sendable {
 
-    let socketAddress: SocketAddress
-    let username: String
-    let password: String
-    let database: String
-    let sslmode: SSLMode
-    let sslcert: String?
-    let sslkey: String?
-    let sslrootcert: String?
-    let sslcrl: String?
+    var socketAddress: SocketAddress
+    var username: String
+    var password: String
+    var database: String
+    var sslmode: SSLMode
+    var sslcert: NIOSSLCertificate?
+    var sslkey: NIOSSLPrivateKey?
+    var sslrootcert: NIOSSLAdditionalTrustRoots?
+    // var sslcrl: String?
+
+    init(
+        socketAddress: SocketAddress = .hostPort(host: "localhost", port: 5432),
+        username: String = "postgres",
+        password: String = "",
+        database: String = "postgres",
+        sslmode: SSLMode = .require,
+        sslcert: NIOSSLCertificate? = nil,
+        sslkey: NIOSSLPrivateKey? = nil,
+        sslrootcert: NIOSSLAdditionalTrustRoots? = nil,
+        // sslcrl: String? = nil
+    ) {
+        self.socketAddress = socketAddress
+        self.username = username
+        self.password = password
+        self.database = database
+        self.sslmode = sslmode
+        self.sslcert = sslcert
+        self.sslkey = sslkey
+        self.sslrootcert = sslrootcert
+        // self.sslcrl = sslcrl
+    }
 
     enum SocketAddress {
         case hostPort(host: String, port: Int)
@@ -25,7 +47,7 @@ public struct PostgreSQLConnectionConfigs: Sendable {
         case verifyFull = "verify-full"
     }
 
-    public static func fromDatabaseURL(_ databaseURL: String) throws -> PostgreSQLConnectionConfigs {
+    public static func fromDatabaseURL(_ databaseURL: String) throws -> ConnectionConfigs {
         guard let components = URLComponents(string: databaseURL) else {
             throw ClientError.configurationError("Invalid URL")
         }
@@ -76,10 +98,28 @@ public struct PostgreSQLConnectionConfigs: Sendable {
             throw ClientError.configurationError("Invalid sslmode: \(sslmodeQuery)")
         }
 
-        let sslcert = components.queryItems?.first(where: { $0.name == "sslcert" })?.value
-        let sslkey = components.queryItems?.first(where: { $0.name == "sslkey" })?.value
-        let sslrootcert = components.queryItems?.first(where: { $0.name == "sslrootcert" })?.value
-        let sslcrl = components.queryItems?.first(where: { $0.name == "sslcrl" })?.value
+        let sslcertString = components.queryItems?.first(where: { $0.name == "sslcert" })?.value
+        let sslkeyString = components.queryItems?.first(where: { $0.name == "sslkey" })?.value
+        let sslrootcertString = components.queryItems?.first(where: { $0.name == "sslrootcert" })?.value
+        // let sslcrlString = components.queryItems?.first(where: { $0.name == "sslcrl" })?.value
+
+        var sslcert: NIOSSLCertificate?
+        var sslkey: NIOSSLPrivateKey?
+        var sslrootcert: NIOSSLAdditionalTrustRoots?
+        // let sslcrl: String?
+
+        if let sslcertString = sslcertString {
+            let certs = try NIOSSLCertificate.fromPEMFile(sslcertString)
+            sslcert = certs.first
+        }
+        if let sslkeyString = sslkeyString {
+            let privateKey = try NIOSSLPrivateKey(file: sslkeyString, format: .pem)
+            sslkey = privateKey
+        }
+        if let sslrootcertString = sslrootcertString {
+            let certs = try NIOSSLCertificate.fromPEMFile(sslrootcertString)
+            sslrootcert = .file(sslrootcertString)
+        }
 
         return .init(
             socketAddress: socketAddress,
@@ -90,7 +130,7 @@ public struct PostgreSQLConnectionConfigs: Sendable {
             sslcert: sslcert,
             sslkey: sslkey,
             sslrootcert: sslrootcert,
-            sslcrl: sslcrl
+            // sslcrl: sslcrl
         )
     }
 }

@@ -1,16 +1,16 @@
-// import AsyncAlgorithms
 import NIO
 import NIOSSL
 import NIOTLS
 
-final class PostgreSQLProtocolClient: @unchecked Sendable {
+final class ProtocolClient: @unchecked Sendable {
     private let channel: Channel
     private let outbound: Outbound
     private var inbound: Inbound.AsyncIterator
     private typealias Outbound = NIOAsyncChannelOutboundWriter<PostgreSQLFrontendMessage>
     private typealias Inbound = NIOAsyncChannelInboundStream<PostgreSQLBackendMessage>
+    private let messageCodec = MessageCodec()
 
-    init(eventLoop loop: EventLoop, configs: PostgreSQLConnectionConfigs) async throws {
+    init(eventLoop loop: EventLoop, configs: ConnectionConfigs) async throws {
 
         let socketAddress: SocketAddress =
             switch configs.socketAddress {
@@ -22,20 +22,19 @@ final class PostgreSQLProtocolClient: @unchecked Sendable {
 
         let channel: any Channel
         let channelReady = loop.makePromise(of: Void.self)
+        var handlers: [ChannelHandler] = [
+            ByteToMessageHandler(messageCodec),
+            MessageToByteHandler(messageCodec),
+        ]
+        if let sslHandler = try Self.getTLSHandler(configs: configs) {
+            handlers.insert(sslHandler, at: 0)
+        }
+        handlers.append(ReadyForStartupHandler(promise: channelReady, tls: configs.sslmode != .disable))
         do {
-            let messageCodec = PostgreSQLMessageCodec()
-            var handlers: [ChannelHandler] = [
-                ByteToMessageHandler(messageCodec),
-                MessageToByteHandler(messageCodec),
-                ReadyForStartupHandler(promise: channelReady, tls: configs.sslmode != .disable),
-            ]
-            let sslHandler = try Self.getTLSHandler(configs: configs)
-            if let sslHandler = sslHandler {
-                handlers.insert(sslHandler, at: 0)
-            }
-
             channel = try await ClientBootstrap(group: loop)
-                .channelInitializer { $0.pipeline.addHandlers(handlers) }
+                .channelInitializer { channel in
+                    channel.pipeline.addHandlers(handlers)
+                }
                 .connect(to: socketAddress).get()
         } catch {
             channelReady.fail(error)
@@ -73,7 +72,9 @@ final class PostgreSQLProtocolClient: @unchecked Sendable {
     }
 
     func close() async throws {
-        try await channel.close()
+        if channel.isActive {
+            try await channel.close()
+        }
     }
 
     func isConnected() -> Bool {
@@ -85,10 +86,10 @@ final class PostgreSQLProtocolClient: @unchecked Sendable {
     }
 
     func receive() async throws -> PostgreSQLBackendMessage? {
-        return try await inbound.next()  // TODO: make it thread safe
+        return try await inbound.next()  // TODO: make it thread-safe
     }
 
-    private static func getTLSHandler(configs: PostgreSQLConnectionConfigs) throws
+    private static func getTLSHandler(configs: ConnectionConfigs) throws
         -> NIOSSLClientHandler?
     {
         guard configs.sslmode != .disable else {
@@ -106,15 +107,13 @@ final class PostgreSQLProtocolClient: @unchecked Sendable {
         }
 
         if let sslcert = configs.sslcert {
-            let certs = try NIOSSLCertificate.fromPEMFile(sslcert)
-            tlsConfig.certificateChain = certs.map { .certificate($0) }
+            tlsConfig.certificateChain = [.certificate(sslcert)]
         }
         if let sslkey = configs.sslkey {
-            let privateKey = try NIOSSLPrivateKey(file: sslkey, format: .pem)
-            tlsConfig.privateKey = .privateKey(privateKey)
+            tlsConfig.privateKey = .privateKey(sslkey)
         }
         if let sslrootcert = configs.sslrootcert {
-            tlsConfig.additionalTrustRoots = [.file(sslrootcert)]
+            tlsConfig.additionalTrustRoots = [sslrootcert]
         }
         guard case let .hostPort(host, _) = configs.socketAddress else {
             throw ClientError.configurationError("Host is required for TLS connections")
@@ -124,7 +123,7 @@ final class PostgreSQLProtocolClient: @unchecked Sendable {
         return sslHandler
     }
 
-    private final class PostgreSQLMessageCodec: ByteToMessageDecoder, MessageToByteEncoder, Sendable {
+    private final class MessageCodec: ByteToMessageDecoder, MessageToByteEncoder, Sendable {
         typealias OutboundIn = PostgreSQLFrontendMessage
         typealias InboundOut = PostgreSQLBackendMessage
 

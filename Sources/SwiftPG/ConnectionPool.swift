@@ -1,16 +1,16 @@
 import NIO
 
-public final actor PostgreSQLConnectionPool {
+public final actor ConnectionPool {
     private let eventLoopGroup: EventLoopGroup
-    private let configuration: PostgreSQLConnectionConfigs
+    private let configuration: ConnectionConfigs
     private let maxConnections: Int
 
-    private var connections: [ObjectIdentifier: PostgreSQLConnection] = [:]
-    private var availables: [PostgreSQLConnection] = []
+    private var connections: [ObjectIdentifier: Connection] = [:]
+    private var availables: [Connection] = []
     private var waiters: [Waiter] = []
 
     init(
-        configuration: PostgreSQLConnectionConfigs,
+        configuration: ConnectionConfigs,
         maxConnections: Int,
         eventLoopGroup: EventLoopGroup = MultiThreadedEventLoopGroup.singleton
     ) {
@@ -19,7 +19,7 @@ public final actor PostgreSQLConnectionPool {
         self.maxConnections = maxConnections
     }
 
-    func acquire(timeout: Duration? = nil) async throws -> PostgreSQLConnection {
+    func acquire(timeout: Duration? = nil) async throws -> Connection {
         while let connection = availables.popLast() {
             if connection.isClosed() {
                 connections.removeValue(forKey: ObjectIdentifier(connection))
@@ -29,7 +29,7 @@ public final actor PostgreSQLConnectionPool {
         }
 
         if connections.count < maxConnections {
-            let connection = PostgreSQLConnection(eventLoopGroup: eventLoopGroup)
+            let connection = Connection(eventLoopGroup: eventLoopGroup)
             connections[ObjectIdentifier(connection)] = connection
             try await connection.connect(configs: configuration)
             return connection
@@ -41,7 +41,7 @@ public final actor PostgreSQLConnectionPool {
         return try await waiter.get()
     }
 
-    func release(_ connection: PostgreSQLConnection) async {
+    func release(_ connection: Connection) async {
         if connection.isConnected() {
             if let waiter = waiters.popLast() {
                 waiter.succeed(connection)
@@ -77,7 +77,10 @@ public final actor PostgreSQLConnectionPool {
     public func execute(_ sql: String, _ params: [PostgreSQLEncodable] = []) async throws {
         let connection = try await acquire()
         try await connection.execute(sql, params)
-        await release(connection)
+        Task {
+            do { try await connection.waitCurrentTask() }
+            await release(connection)
+        }
     }
 
     public func batchQuery(_ sql: String, _ params: [[PostgreSQLEncodable]] = []) async throws
@@ -86,7 +89,7 @@ public final actor PostgreSQLConnectionPool {
         let connection = try await acquire()
         let rows = try await connection.batchQuery(sql, params)
         Task {
-            try await connection.waitCurrentTask()
+            do { try await connection.waitCurrentTask() }
             await release(connection)
         }
         return rows
@@ -94,11 +97,11 @@ public final actor PostgreSQLConnectionPool {
 }
 
 private final class Waiter: Sendable {
-    let promise: EventLoopPromise<PostgreSQLConnection>
-    let timeout: Task<Void, Error>?
+    let promise: EventLoopPromise<Connection>
+    let timeout: Task<Void, Swift.Error>?
 
     init(_ loop: EventLoop, _ timeout: Duration?) {
-        let promise = loop.makePromise(of: PostgreSQLConnection.self)
+        let promise = loop.makePromise(of: Connection.self)
         if let timeout = timeout {
             self.timeout = Task {
                 try await Task.sleep(for: timeout)
@@ -110,17 +113,17 @@ private final class Waiter: Sendable {
         self.promise = promise
     }
 
-    func fail(error: Error) {
+    func fail(error: Swift.Error) {
         timeout?.cancel()
         promise.fail(error)
     }
 
-    func succeed(_ connection: PostgreSQLConnection) {
+    func succeed(_ connection: Connection) {
         timeout?.cancel()
         promise.succeed(connection)
     }
 
-    func get() async throws -> PostgreSQLConnection {
+    func get() async throws -> Connection {
         do {
             return try await promise.futureResult.get()
         } catch {
