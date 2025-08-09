@@ -94,6 +94,15 @@ public final actor ConnectionPool {
         }
         return rows
     }
+
+    public func batchExecute(_ sql: String, _ params: [[PostgreSQLEncodable]] = []) async throws {
+        let connection = try await acquire()
+        try await connection.batchExecute(sql, params)
+        Task {
+            do { try await connection.waitCurrentTask() }
+            await release(connection)
+        }
+    }
 }
 
 private final class Waiter: Sendable {
