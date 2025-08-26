@@ -7,7 +7,7 @@ final class ConnectionTLSTests {
     // MARK: - sslmode require
     @Test(arguments: [postgres17GoodCnHostPort, postgres17BadCnHostPort].compactMap { $0 })
     func connectSuccessSSLModeRequire(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_trust",
@@ -23,7 +23,7 @@ final class ConnectionTLSTests {
     func connectFailureSSLModeRequireNoServerSSL(socketAddress: ConnectionConfigs.SocketAddress)
         async throws
     {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_trust_hostnossl",
@@ -42,7 +42,7 @@ final class ConnectionTLSTests {
     // MARK: - sslmode verify-ca
     @Test(arguments: [postgres17GoodCnHostPort, postgres17BadCnHostPort].compactMap { $0 })
     func connectSuccessSSLModeVerifyCA(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_trust",
@@ -57,7 +57,7 @@ final class ConnectionTLSTests {
 
     @Test(arguments: [postgres17GoodCnHostPort, postgres17BadCnHostPort].compactMap { $0 })
     func connectFailureSSLModeVerifyCAUnknownRootCA(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_trust",
@@ -74,7 +74,7 @@ final class ConnectionTLSTests {
     func connectFailureSSLModeVerifyCANoRootCert(socketAddress: ConnectionConfigs.SocketAddress)
         async throws
     {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_trust",
@@ -89,7 +89,7 @@ final class ConnectionTLSTests {
     // MARK: - sslmode verify-full
     @Test(arguments: [postgres17GoodCnHostPort].compactMap { $0 })
     func connectSuccessSSLModeVerifyFull(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_trust",
@@ -104,7 +104,7 @@ final class ConnectionTLSTests {
 
     @Test(arguments: [postgres17BadCnHostPort].compactMap { $0 })
     func connectFailureSSLModeVerifyFullBadCN(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_trust",

@@ -908,7 +908,7 @@ final class CodecTests {
     }
 
     private func createTestConnection(socketAddress: ConnectionConfigs.SocketAddress) async throws -> Connection {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs = ConnectionConfigs(
             socketAddress: socketAddress,
             username: "user_trust",

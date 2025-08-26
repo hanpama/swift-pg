@@ -13,7 +13,7 @@ final class ConnectionAuthenticationTests {
             postgres17UnixSocket,
         ].compactMap { $0 })
     func connectSuccessScramSha256(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_scram_sha_256",
@@ -33,7 +33,7 @@ final class ConnectionAuthenticationTests {
             postgres17UnixSocket,
         ].compactMap { $0 })
     func connectFailureScramSha256InvalidPassword(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn: Connection = Connection()
+        let conn: Connection = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_scram_sha_256",
@@ -53,7 +53,7 @@ final class ConnectionAuthenticationTests {
     // - MARK: clientcert
     @Test(arguments: [postgres17GoodCnHostPort, postgres17BadCnHostPort].compactMap { $0 })
     func connectSuccessClientCert(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_cert",
@@ -69,7 +69,7 @@ final class ConnectionAuthenticationTests {
 
     @Test(arguments: [postgres17GoodCnHostPort, postgres17BadCnHostPort].compactMap { $0 })
     func connectFailureClientCertNoClientCert(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_cert",
@@ -93,7 +93,7 @@ final class ConnectionAuthenticationTests {
             postgres17UnixSocket,
         ].compactMap { $0 })
     func connectFailurePGHBARejected(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn: Connection = Connection()
+        let conn: Connection = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_reject",
@@ -117,7 +117,7 @@ final class ConnectionAuthenticationTests {
             postgres17UnixSocket,
         ].compactMap { $0 })
     func connectFailureInvalidDatabase(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_trust",
@@ -142,7 +142,7 @@ final class ConnectionAuthenticationTests {
             postgres17UnixSocket,
         ].compactMap { $0 })
     func connectFailureInvalidUsername(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "invalid_user",

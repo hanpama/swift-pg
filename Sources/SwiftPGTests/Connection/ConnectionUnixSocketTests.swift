@@ -6,7 +6,7 @@ import Testing
 final class ConnectionUnixSocketTests {
     @Test(arguments: [postgres17UnixSocket, postgres16UnixSocket].compactMap { $0 })
     func connectSuccessLocalTrust(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_trust",
@@ -18,7 +18,7 @@ final class ConnectionUnixSocketTests {
     }
 
     func connectFailureLocalTrustInvalidPath() async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: .unixDomainSocket(directory: "/invalid/path", port: 5432),
             username: "user_trust",
