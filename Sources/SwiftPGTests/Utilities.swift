@@ -184,6 +184,16 @@ func getTlsSaslHostPort() -> ConnectionConfigs.SocketAddress {
 // Shared EventLoopGroup for tests that will be shut down properly
 func createTestConnection() async throws -> Connection {
     let conn = Connection(eventLoopGroup: testEventLoopGroup)
-    try await conn.connect(configs: getPlainSaslConnectionConfigs())
+    
+    // Use the same configuration as other tests - postgres17 with user_scram_sha_256
+    let configs = ConnectionConfigs(
+        socketAddress: postgres17HostPort,
+        username: "user_scram_sha_256",
+        password: "a1~!@#$%^&*()_+",
+        database: "postgres",
+        sslmode: .disable
+    )
+    
+    try await conn.connect(configs: configs)
     return conn
 }
