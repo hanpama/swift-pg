@@ -31,6 +31,30 @@ struct TestEnvironment {
     let hostUnknownCn: String?
 }
 
+// Dedicated EventLoopGroup for tests to avoid singleton issues
+let testEventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+
+// Setup signal handling to ensure proper cleanup
+private class TestCleanup {
+    static let shared = TestCleanup()
+    private var hasShutdown = false
+    
+    init() {
+        signal(SIGTERM) { _ in TestCleanup.shared.shutdown() }
+        signal(SIGINT) { _ in TestCleanup.shared.shutdown() }
+        atexit { TestCleanup.shared.shutdown() }
+    }
+    
+    func shutdown() {
+        guard !hasShutdown else { return }
+        hasShutdown = true
+        try? testEventLoopGroup.syncShutdownGracefully()
+    }
+}
+
+// Initialize cleanup handler
+private let _ = TestCleanup.shared
+
 let postgres17HostPort =
     if let host = POSTGRES_17_HOST, let port = POSTGRES_17_PORT {
         ConnectionConfigs.SocketAddress.hostPort(host: host, port: Int(port) ?? 6453)
@@ -157,8 +181,19 @@ func getTlsSaslHostPort() -> ConnectionConfigs.SocketAddress {
     return .hostPort(host: host, port: port)
 }
 
+// Shared EventLoopGroup for tests that will be shut down properly
 func createTestConnection() async throws -> Connection {
-    let conn = Connection()
-    try await conn.connect(configs: getPlainSaslConnectionConfigs())
+    let conn = Connection(eventLoopGroup: testEventLoopGroup)
+    
+    // Use the same configuration as other tests - postgres17 with user_scram_sha_256
+    let configs = ConnectionConfigs(
+        socketAddress: postgres17HostPort,
+        username: "user_scram_sha_256",
+        password: "a1~!@#$%^&*()_+",
+        database: "postgres",
+        sslmode: .disable
+    )
+    
+    try await conn.connect(configs: configs)
     return conn
 }

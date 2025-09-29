@@ -6,7 +6,7 @@ import Testing
 final class ConnectionHostPortTests {
     @Test(arguments: [postgres17HostPort, postgres16HostPort].compactMap { $0 })
     func connectSuccessHostTrust(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: socketAddress,
             username: "user_trust",
@@ -18,7 +18,7 @@ final class ConnectionHostPortTests {
     }
 
     func connectFailureInvalidHost() async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         let configs: ConnectionConfigs = .init(
             socketAddress: .hostPort(host: "invalid_host", port: 5432),
             username: "user_trust",
@@ -32,7 +32,7 @@ final class ConnectionHostPortTests {
 
     @Test(arguments: [postgres17HostPort, postgres16HostPort].compactMap { $0 })
     func connectFailureInvalidPort(socketAddress: ConnectionConfigs.SocketAddress) async throws {
-        let conn = Connection()
+        let conn = Connection(eventLoopGroup: testEventLoopGroup)
         guard case .hostPort(let host, _) = socketAddress else {
             Issue.record("Invalid socket address")
             return
