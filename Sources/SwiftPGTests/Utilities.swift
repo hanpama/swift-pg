@@ -35,9 +35,10 @@ struct TestEnvironment {
 let testEventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
 
 // Setup signal handling to ensure proper cleanup
-private class TestCleanup {
+private final class TestCleanup: @unchecked Sendable {
     static let shared = TestCleanup()
     private var hasShutdown = false
+    private let lock = NSLock()
     
     init() {
         signal(SIGTERM) { _ in TestCleanup.shared.shutdown() }
@@ -46,6 +47,8 @@ private class TestCleanup {
     }
     
     func shutdown() {
+        lock.lock()
+        defer { lock.unlock() }
         guard !hasShutdown else { return }
         hasShutdown = true
         try? testEventLoopGroup.syncShutdownGracefully()
@@ -53,7 +56,7 @@ private class TestCleanup {
 }
 
 // Initialize cleanup handler
-private let _ = TestCleanup.shared
+private let cleanupHandler = TestCleanup.shared
 
 let postgres17HostPort =
     if let host = POSTGRES_17_HOST, let port = POSTGRES_17_PORT {
