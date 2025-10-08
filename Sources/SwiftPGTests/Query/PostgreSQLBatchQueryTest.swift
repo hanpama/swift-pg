@@ -46,7 +46,7 @@ final class PostgreSQLBatchQueryTest {
     @Test
     func testSuccessfulBatchQueryAfterFailure() async throws {
         let connection = try await createTestConnection()
-        let error = await #expect(throws: DatabaseError.self) {
+        let error = await #expect(throws: ClientError.self) {
             _ = try await connection.batchQuery(
                 "SELECT $1::int",
                 [
@@ -56,7 +56,7 @@ final class PostgreSQLBatchQueryTest {
                 ]
             )
         }
-        guard case .invalidTextRepresentation = error else {
+        guard case .codecError = error else {
             Issue.record("Invalid error case: \(String(describing: error))")
             return
         }

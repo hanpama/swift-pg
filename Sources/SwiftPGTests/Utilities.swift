@@ -34,30 +34,6 @@ struct TestEnvironment {
 // Dedicated EventLoopGroup for tests to avoid singleton issues
 let testEventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
 
-// Setup signal handling to ensure proper cleanup
-private final class TestCleanup: @unchecked Sendable {
-    static let shared = TestCleanup()
-    private var hasShutdown = false
-    private let lock = NSLock()
-    
-    init() {
-        signal(SIGTERM) { _ in TestCleanup.shared.shutdown() }
-        signal(SIGINT) { _ in TestCleanup.shared.shutdown() }
-        atexit { TestCleanup.shared.shutdown() }
-    }
-    
-    func shutdown() {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !hasShutdown else { return }
-        hasShutdown = true
-        try? testEventLoopGroup.syncShutdownGracefully()
-    }
-}
-
-// Initialize cleanup handler
-private let cleanupHandler = TestCleanup.shared
-
 let postgres17HostPort =
     if let host = POSTGRES_17_HOST, let port = POSTGRES_17_PORT {
         ConnectionConfigs.SocketAddress.hostPort(host: host, port: Int(port) ?? 6453)
