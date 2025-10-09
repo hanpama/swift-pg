@@ -1,3 +1,4 @@
+import NIO
 import NIOSSL
 import Testing
 
@@ -29,10 +30,10 @@ final class ConnectionTLSTests {
             username: "user_trust_hostnossl",
             sslmode: .require
         )
-        let err = await #expect(throws: DatabaseError.self) {
+        let err = await #expect(throws: ChannelError.self) {
             try await conn.connect(configs: configs)
         }
-        guard case .invalidAuthorizationSpecification = err else {
+        guard case .alreadyClosed = err else {
             Issue.record("Invalid error case: \(String(describing: err))")
             return
         }

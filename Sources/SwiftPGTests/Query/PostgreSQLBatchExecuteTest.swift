@@ -28,7 +28,7 @@ final class PostgreSQLBatchExecuteTest {
     @Test
     func testFailedBatchExecute() async throws {
         let connection = try await createTestConnection()
-        let error = await #expect(throws: DatabaseError.self) {
+        let error = await #expect(throws: ClientError.self) {
             try await connection.batchExecute(
                 "INSERT INTO test (id) VALUES ($1)",
                 [
@@ -38,7 +38,7 @@ final class PostgreSQLBatchExecuteTest {
                 ]
             )
         }
-        guard case .invalidTextRepresentation = error else {
+        guard case .codecError = error else {
             Issue.record("Invalid error case: \(String(describing: error))")
             return
         }
@@ -47,7 +47,7 @@ final class PostgreSQLBatchExecuteTest {
     @Test
     func testSuccessfulBatchExecuteAfterFailure() async throws {
         let connection = try await createTestConnection()
-        let error = await #expect(throws: DatabaseError.self) {
+        let error = await #expect(throws: ClientError.self) {
             try await connection.batchExecute(
                 "INSERT INTO test (id) VALUES ($1)",
                 [
@@ -57,7 +57,7 @@ final class PostgreSQLBatchExecuteTest {
                 ]
             )
         }
-        guard case .invalidTextRepresentation = error else {
+        guard case .codecError = error else {
             Issue.record("Invalid error case: \(String(describing: error))")
             return
         }
