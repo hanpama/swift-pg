@@ -21,28 +21,19 @@ final class ProtocolClient: @unchecked Sendable {
             }
 
         let channel: any Channel
-        let channelReady = loop.makePromise(of: Void.self)
-        var handlers: [ChannelHandler] = [
-            ByteToMessageHandler(messageCodec),
-            MessageToByteHandler(messageCodec),
-        ]
-        if let sslHandler = try Self.getTLSHandler(configs: configs) {
-            handlers.insert(sslHandler, at: 0)
-        }
-        handlers.append(ReadyForStartupHandler(promise: channelReady, tls: configs.sslmode != .disable))
         do {
             channel = try await ClientBootstrap(group: loop)
-                .channelInitializer { channel in
-                    channel.pipeline.addHandlers(handlers)
-                }
                 .connect(to: socketAddress).get()
         } catch {
-            channelReady.fail(error)
             throw error
         }
 
         do {
-            try await channelReady.futureResult.get()
+            if configs.sslmode != .disable {
+                try await Self.performSSLNegotiation(on: channel)
+                try await Self.performTLSHandshake(on: channel, configs: configs)
+            }
+            try await Self.addMessageCodecHandlers(messageCodec, to: channel)
             try await Self.performStartup(on: channel, configs: configs)
 
             let asyncChannel = try await channel.eventLoop.submit {
@@ -73,14 +64,78 @@ final class ProtocolClient: @unchecked Sendable {
         }
     }
 
-    private static func performStartup(on channel: any Channel, configs: ConnectionConfigs) async throws {
+    private static func addMessageCodecHandlers(
+        _ messageCodec: MessageCodec,
+        to channel: any Channel
+    ) async throws {
+        try await channel.eventLoop.submit {
+            try channel.pipeline.syncOperations.addHandler(ByteToMessageHandler(messageCodec))
+            try channel.pipeline.syncOperations.addHandler(MessageToByteHandler(messageCodec))
+        }.get()
+    }
+
+    private static func performSSLNegotiation(on channel: any Channel) async throws {
         let promise = channel.eventLoop.makePromise(of: Void.self)
-        let handler = StartupHandler(configs: configs, promise: promise)
-        try await channel.pipeline.addHandler(handler).get()
+        let handler = SSLRequestHandler(promise: promise)
+        do {
+            try await channel.pipeline.addHandler(handler).get()
+        } catch {
+            promise.fail(error)
+            throw error
+        }
+
         do {
             try await promise.futureResult.get()
             try await channel.pipeline.removeHandler(handler).get()
         } catch {
+            try? await channel.pipeline.removeHandler(handler).get()
+            throw error
+        }
+    }
+
+    private static func performTLSHandshake(
+        on channel: any Channel,
+        configs: ConnectionConfigs
+    ) async throws {
+        let promise = channel.eventLoop.makePromise(of: Void.self)
+        let handler = TLSHandshakeHandler(promise: promise)
+        do {
+            try await channel.eventLoop.submit {
+                guard let tlsHandler = try Self.getTLSHandler(configs: configs) else {
+                    throw ClientError.configurationError("TLS handler is required for TLS handshake")
+                }
+                try channel.pipeline.syncOperations.addHandler(tlsHandler)
+                try channel.pipeline.syncOperations.addHandler(handler)
+            }.get()
+        } catch {
+            promise.fail(error)
+            throw error
+        }
+
+        do {
+            try await promise.futureResult.get()
+            try await channel.pipeline.removeHandler(handler).get()
+        } catch {
+            try? await channel.pipeline.removeHandler(handler).get()
+            throw error
+        }
+    }
+
+    private static func performStartup(on channel: any Channel, configs: ConnectionConfigs) async throws {
+        let promise = channel.eventLoop.makePromise(of: Void.self)
+        let handler = StartupHandler(configs: configs, promise: promise)
+        do {
+            try await channel.pipeline.addHandler(handler).get()
+        } catch {
+            promise.fail(error)
+            throw error
+        }
+
+        do {
+            try await promise.futureResult.get()
+            try await channel.pipeline.removeHandler(handler).get()
+        } catch {
+            try? await channel.pipeline.removeHandler(handler).get()
             throw error
         }
     }
@@ -137,7 +192,13 @@ final class ProtocolClient: @unchecked Sendable {
             throw ClientError.configurationError("Host is required for TLS connections")
         }
         let sslContext = try NIOSSLContext(configuration: tlsConfig)
-        let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
+        let serverHostname: String? =
+            if case .verifyFull = configs.sslmode {
+                host
+            } else {
+                nil
+            }
+        let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: serverHostname)
         return sslHandler
     }
 
@@ -555,35 +616,112 @@ final class ProtocolClient: @unchecked Sendable {
         }
     }
 
-    private final class ReadyForStartupHandler: ChannelInboundHandler, Sendable {
-        typealias InboundIn = PostgreSQLBackendMessage
+    private final class SSLRequestHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
+        typealias InboundIn = ByteBuffer
+        typealias OutboundOut = ByteBuffer
 
         private let promise: EventLoopPromise<Void>
-        private let tls: Bool
-        init(promise: EventLoopPromise<Void>, tls: Bool) {
+        private var completed = false
+        private var inboundBuffer = ByteBuffer()
+
+        init(promise: EventLoopPromise<Void>) {
             self.promise = promise
-            self.tls = tls
         }
 
-        func channelActive(context: ChannelHandlerContext) {
-            context.fireChannelActive()
-            if !tls {
-                promise.succeed(())
+        func handlerAdded(context: ChannelHandlerContext) {
+            var buffer = context.channel.allocator.buffer(capacity: 8)
+            buffer.writeInteger(Int32(8))
+            buffer.writeInteger(Int32(80877103))
+            context.writeAndFlush(wrapOutboundOut(buffer), promise: nil)
+        }
+
+        func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+            var data = unwrapInboundIn(data)
+            inboundBuffer.writeBuffer(&data)
+            guard let response = inboundBuffer.readInteger(as: UInt8.self) else {
+                return
+            }
+
+            switch response {
+            case UInt8(ascii: "S"):
+                succeed()
+            case UInt8(ascii: "N"):
+                fail(ClientError.connectionError("Server does not support TLS"), context: context)
+            default:
+                fail(DriverError("Invalid SSL negotiation response: \(response)"), context: context)
             }
         }
 
-        func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
-            context.fireUserInboundEventTriggered(event)
-            if tls {
-                if case TLSUserEvent.handshakeCompleted = event {
-                    promise.succeed(())
-                }
-            }
+        func channelInactive(context: ChannelHandlerContext) {
+            fail(ClientError.connectionError("Connection closed during SSL negotiation"), context: context)
+            context.fireChannelInactive()
         }
 
         func errorCaught(context: ChannelHandlerContext, error: Error) {
+            fail(error, context: context)
             context.fireErrorCaught(error)
+        }
+
+        private func succeed() {
+            guard !completed else {
+                return
+            }
+            completed = true
+            promise.succeed(())
+        }
+
+        private func fail(_ error: Error, context: ChannelHandlerContext) {
+            guard !completed else {
+                return
+            }
+            completed = true
             promise.fail(error)
+            context.close(promise: nil)
+        }
+    }
+
+    private final class TLSHandshakeHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
+        typealias InboundIn = ByteBuffer
+
+        private let promise: EventLoopPromise<Void>
+        private var completed = false
+
+        init(promise: EventLoopPromise<Void>) {
+            self.promise = promise
+        }
+
+        func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+            if case TLSUserEvent.handshakeCompleted = event {
+                succeed()
+            }
+            context.fireUserInboundEventTriggered(event)
+        }
+
+        func channelInactive(context: ChannelHandlerContext) {
+            fail(ClientError.connectionError("Connection closed during TLS handshake"), context: context)
+            context.fireChannelInactive()
+        }
+
+        func errorCaught(context: ChannelHandlerContext, error: Error) {
+            fail(error, context: context)
+            context.fireErrorCaught(error)
+        }
+
+        private func succeed() {
+            guard !completed else {
+                return
+            }
+            completed = true
+            promise.succeed(())
+        }
+
+        private func fail(_ error: Error, context: ChannelHandlerContext) {
+            guard !completed else {
+                return
+            }
+            completed = true
+            promise.fail(error)
+            context.close(promise: nil)
         }
     }
 

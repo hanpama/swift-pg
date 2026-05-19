@@ -4,6 +4,7 @@ import NIOConcurrencyHelpers
 @testable import SwiftPG
 
 enum ScriptedPostgresStep {
+    case readSSLRequest(write: [ByteBuffer] = [])
     case readStartup(write: [ByteBuffer] = [])
     case readMessage(UInt8, write: [ByteBuffer] = [])
     case write([ByteBuffer])
@@ -11,6 +12,7 @@ enum ScriptedPostgresStep {
 }
 
 enum ScriptedFrontendMessage: Equatable {
+    case sslRequest
     case startup
     case message(UInt8)
 
@@ -117,9 +119,15 @@ final class ScriptedPostgresServer: @unchecked Sendable {
                     guard let startupLength = readableStartupLength() else {
                         return
                     }
+                    let message = readableStartupMessage(
+                        startIndex: inboundBuffer.readerIndex,
+                        startupLength: startupLength
+                    )
                     inboundBuffer.moveReaderIndex(forwardBy: startupLength)
-                    expectingStartup = false
-                    handle(.startup, context: context)
+                    if message != .sslRequest {
+                        expectingStartup = false
+                    }
+                    handle(message, context: context)
                     continue
                 }
 
@@ -147,6 +155,21 @@ final class ScriptedPostgresServer: @unchecked Sendable {
                 return nil
             }
             return totalLength
+        }
+
+        private func readableStartupMessage(
+            startIndex: Int,
+            startupLength: Int
+        ) -> ScriptedFrontendMessage {
+            guard
+                startupLength == 8,
+                let requestCode = inboundBuffer.getInteger(
+                    at: startIndex + 4, as: Int32.self),
+                requestCode == 80877103
+            else {
+                return .startup
+            }
+            return .sslRequest
         }
 
         private func readableFrontendMessage() -> ScriptedFrontendMessage? {
@@ -186,6 +209,10 @@ final class ScriptedPostgresServer: @unchecked Sendable {
             }
 
             switch (message, steps.removeFirst()) {
+            case (.sslRequest, .readSSLRequest(let frames)):
+                write(frames, context: context)
+                processReadySteps(context: context)
+
             case (.startup, .readStartup(let frames)):
                 write(frames, context: context)
                 processReadySteps(context: context)
@@ -209,7 +236,7 @@ final class ScriptedPostgresServer: @unchecked Sendable {
                 case .close:
                     steps.removeFirst()
                     context.close(promise: nil)
-                case .readStartup, .readMessage:
+                case .readSSLRequest, .readStartup, .readMessage:
                     return
                 }
             }

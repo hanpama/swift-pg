@@ -1,6 +1,12 @@
 import NIO
 
 enum PostgresWire {
+    static func sslNotSupported() -> ByteBuffer {
+        var buffer = ByteBuffer()
+        buffer.writeInteger(UInt8(ascii: "N"))
+        return buffer
+    }
+
     static func authenticationOk() -> ByteBuffer {
         typedMessage("R") { body in
             body.writeInteger(Int32(0))
