@@ -3,17 +3,17 @@ import NIOSSL
 
 public struct ConnectionConfigs: Sendable {
 
-    var socketAddress: SocketAddress
-    var username: String
-    var password: String
-    var database: String
-    var sslmode: SSLMode
-    var sslcert: NIOSSLCertificate?
-    var sslkey: NIOSSLPrivateKey?
-    var sslrootcert: NIOSSLAdditionalTrustRoots?
+    public var socketAddress: SocketAddress
+    public var username: String
+    public var password: String
+    public var database: String
+    public var sslmode: SSLMode
+    public var sslcert: NIOSSLCertificate?
+    public var sslkey: NIOSSLPrivateKey?
+    public var sslrootcert: NIOSSLAdditionalTrustRoots?
     // var sslcrl: String?
 
-    init(
+    public init(
         socketAddress: SocketAddress = .hostPort(host: "localhost", port: 5432),
         username: String = "postgres",
         password: String = "",
@@ -35,7 +35,7 @@ public struct ConnectionConfigs: Sendable {
         // self.sslcrl = sslcrl
     }
 
-    enum SocketAddress {
+    public enum SocketAddress: Sendable {
         case hostPort(host: String, port: Int)
         case unixDomainSocket(directory: String, port: Int)
     }
