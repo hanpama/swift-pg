@@ -71,7 +71,7 @@ class ScramSha256Authenticator {
                 message: "Invalid base64 encoding for salt")
         }
 
-        let derivedKey = pbkdf2SHA256(
+        let derivedKey = try pbkdf2SHA256(
             pass: passwordData,
             salt: saltData,
             iterations: iterations,
@@ -95,7 +95,7 @@ class ScramSha256Authenticator {
             )
         }
 
-        let clientKeyMessage = "Client Key".data(using: .utf8)!
+        let clientKeyMessage = Data("Client Key".utf8)
         let clientKeyMac = HMAC<SHA256>.authenticationCode(
             for: clientKeyMessage, using: saltedPasswordKey)
 
@@ -111,7 +111,7 @@ class ScramSha256Authenticator {
             for: authMessageData, using: storedKey)
         let clientSignatureData = Data(clientSignatureMac)
 
-        let clientProofData = xor(clientKeyData, clientSignatureData)
+        let clientProofData = try xor(clientKeyData, clientSignatureData)
         let clientProofBase64 = clientProofData.base64EncodedString()
 
         let clientFinalWithoutProof = "c=biws,r=\(combinedNonce)"
@@ -146,7 +146,7 @@ class ScramSha256Authenticator {
                 message: "Invalid base64 encoding for server signature (v)")
         }
 
-        let serverKeyMessage = "Server Key".data(using: .utf8)!
+        let serverKeyMessage = Data("Server Key".utf8)
         let serverKeyMac = HMAC<SHA256>.authenticationCode(
             for: serverKeyMessage, using: saltedPasswordKey)
         let serverKey = SymmetricKey(data: serverKeyMac)
@@ -170,9 +170,9 @@ class ScramSha256Authenticator {
             .replacingOccurrences(of: ",", with: "=2C")
     }
 
-    private func xor(_ data1: Data, _ data2: Data) -> Data {
+    private func xor(_ data1: Data, _ data2: Data) throws -> Data {
         guard data1.count == data2.count else {
-            fatalError("Data lengths do not match for XOR operation")
+            throw ScramSha256AuthenticatorError(message: "Data lengths do not match for XOR operation")
         }
         var result = Data(count: data1.count)
         for i in 0..<data1.count {
@@ -181,7 +181,9 @@ class ScramSha256Authenticator {
         return result
     }
 
-    private func pbkdf2SHA256(pass: SymmetricKey, salt: Data, iterations: Int, outLen: Int) -> Data {
+    private func pbkdf2SHA256(pass: SymmetricKey, salt: Data, iterations: Int, outLen: Int) throws
+        -> Data
+    {
         let hashLength = 32
         let blocks = (outLen + hashLength - 1) / hashLength
         var derivedKey = Data()
@@ -198,7 +200,7 @@ class ScramSha256Authenticator {
 
             for _ in 1..<iterations {
                 U = Data(HMAC<SHA256>.authenticationCode(for: U, using: pass))
-                T = xor(T, U)
+                T = try xor(T, U)
             }
             derivedKey.append(contentsOf: T)
         }

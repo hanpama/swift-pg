@@ -57,9 +57,9 @@ extension DatabaseError: SwiftPGError {
             }
         }
         let details = DatabaseErrorDetails(
-            severity: severity!,
-            code: code!,
-            message: message!,
+            severity: severity ?? "ERROR",
+            code: code ?? "XXXXX",
+            message: message ?? "Unknown database error",
             detail: detail,
             hint: hint,
             position: position,

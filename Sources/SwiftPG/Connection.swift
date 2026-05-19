@@ -309,13 +309,14 @@ public final class Connection: Sendable {
 
             case .authenticationSasl(let mechanisms):
                 if mechanisms.contains("SCRAM-SHA-256") || mechanisms.contains("SCRAM-SHA-256-PLUS") {
-                    scramSha256Authenticator = try ScramSha256Authenticator(
+                    let authenticator = try ScramSha256Authenticator(
                         username: username, password: password)
+                    scramSha256Authenticator = authenticator
 
                     try await send(
                         .saslInitialResponse(
                             mechanism: "SCRAM-SHA-256",
-                            initialResponse: scramSha256Authenticator!.formatClientFirstMessage()
+                            initialResponse: authenticator.formatClientFirstMessage()
                         )
                     )
                 } else {
@@ -454,16 +455,31 @@ public struct PostgreSQLRow: Sendable {
     public func decode<each V>() throws -> (repeat each V) {
         var buffer = columns
         var fieldsIterator: IndexingIterator<[Int32]> = fieldOids.makeIterator()
-        return (repeat try get((each V).self, fieldsIterator.next()!, &buffer))
+        return (repeat try get((each V).self, nextOid(&fieldsIterator), &buffer))
+    }
+
+    private func nextOid(_ fieldsIterator: inout IndexingIterator<[Int32]>) throws -> Int32 {
+        guard let oid = fieldsIterator.next() else {
+            throw ClientError.codecError("Requested more values than row contains")
+        }
+        return oid
     }
 
     private func get<T>(_ type: T.Type, _ oid: Int32, _ buf: inout ByteBuffer) throws -> T {
         if let type = type as? PostgreSQLDecodable.Type {
-            return try type.init(pgTypeOid: oid, buffer: &buf) as! T
+            let value = try type.init(pgTypeOid: oid, buffer: &buf)
+            guard let typedValue = value as? T else {
+                throw ClientError.codecError("Decoded value cannot be cast to \(T.self)")
+            }
+            return typedValue
         }
         if type == PostgreSQLDecodable.self || type == Any.self {
             if let type = defaultDecoderMap[oid] {
-                return try type.init(pgTypeOid: oid, buffer: &buf) as! T
+                let value = try type.init(pgTypeOid: oid, buffer: &buf)
+                guard let typedValue = value as? T else {
+                    throw ClientError.codecError("Decoded value cannot be cast to \(T.self)")
+                }
+                return typedValue
             }
         }
         throw ClientError.codecError("Cannot decode \(type)")

@@ -330,7 +330,12 @@ extension Decimal: PostgreSQLCodable, PostgreSQLCodableArrayElement {
                     return digit.padding(toLength: 4, withPad: "0", startingAt: 0)
                 }
 
-                digits = (expDigits + fracDigits).map { UInt16($0)! }
+                digits = try (expDigits + fracDigits).map { digit -> UInt16 in
+                    guard let value = UInt16(digit) else {
+                        throw ClientError.codecError("Invalid Decimal digit group")
+                    }
+                    return value
+                }
                 ndigits = Int16(digits.count)
                 weight = Int16(expDigits.count - 1)
                 sign = self.isSignMinus ? .negative : .positive
@@ -560,7 +565,10 @@ where Element: PostgreSQLCodableArrayElement, Element: PostgreSQLDecodable {
         let elements = try (0..<count).map { _ in
             try Element?(pgArrayTypeOid: pgTypeOid, buffer: &buffer)
         }
-        self = elements as! [Element]
+        guard let elements = elements as? [Element] else {
+            throw ClientError.codecError("Cannot decode NULL array element into \(Element.self)")
+        }
+        self = elements
     }
 }
 

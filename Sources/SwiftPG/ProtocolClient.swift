@@ -138,8 +138,13 @@ final class ProtocolClient: @unchecked Sendable {
             guard buffer.readableBytes >= 5 else {
                 return .needMoreData
             }
-            let messageType = buffer.getInteger(at: buffer.readerIndex, as: UInt8.self)!
-            let messageLength = buffer.getInteger(at: buffer.readerIndex + 1, as: Int32.self)!
+            guard
+                let messageType = buffer.getInteger(at: buffer.readerIndex, as: UInt8.self),
+                let messageLength = buffer.getInteger(at: buffer.readerIndex + 1, as: Int32.self),
+                messageLength >= 4
+            else {
+                throw DriverError("Invalid backend message header")
+            }
 
             let dataLength = Int(messageLength) - 4  // 4 bytes for the length itself
             guard buffer.readableBytes >= dataLength + 5 else {
@@ -147,10 +152,56 @@ final class ProtocolClient: @unchecked Sendable {
             }
 
             buffer.moveReaderIndex(forwardBy: 5)  // Move past the message type and length
-            var dataBuffer = buffer.readSlice(length: dataLength)!
+            guard var dataBuffer = buffer.readSlice(length: dataLength) else {
+                throw DriverError("Invalid backend message body")
+            }
             let message = try Self.decodeMessage(messageType, &dataBuffer)
             context.fireChannelRead(wrapInboundOut(message))
             return .continue
+        }
+
+        private static func readInteger<T: FixedWidthInteger>(
+            _ buffer: inout ByteBuffer, as type: T.Type, field: String
+        ) throws -> T {
+            guard let value = buffer.readInteger(as: type) else {
+                throw DriverError("Invalid backend message: missing \(field)")
+            }
+            return value
+        }
+
+        private static func readCount(_ buffer: inout ByteBuffer, field: String) throws -> Int {
+            let count = try readInteger(&buffer, as: Int16.self, field: field)
+            guard count >= 0 else {
+                throw DriverError("Invalid backend message: negative \(field)")
+            }
+            return Int(count)
+        }
+
+        private static func readNullTerminatedString(_ buffer: inout ByteBuffer, field: String)
+            throws -> String
+        {
+            guard let value = buffer.readNullTerminatedString() else {
+                throw DriverError("Invalid backend message: missing \(field)")
+            }
+            return value
+        }
+
+        private static func readString(_ buffer: inout ByteBuffer, length: Int, field: String)
+            throws -> String
+        {
+            guard let value = buffer.readString(length: length) else {
+                throw DriverError("Invalid backend message: missing \(field)")
+            }
+            return value
+        }
+
+        private static func readBytes(_ buffer: inout ByteBuffer, length: Int, field: String)
+            throws -> [UInt8]
+        {
+            guard let value = buffer.readBytes(length: length) else {
+                throw DriverError("Invalid backend message: missing \(field)")
+            }
+            return value
         }
 
         private static func decodeMessage(_ type: UInt8, _ buffer: inout ByteBuffer) throws
@@ -161,7 +212,8 @@ final class ProtocolClient: @unchecked Sendable {
 
             switch type {
             case 82:  // 'R'
-                let authMessageType = buffer.readInteger(as: Int32.self)!
+                let authMessageType = try readInteger(
+                    &buffer, as: Int32.self, field: "authentication message type")
                 switch authMessageType {
                 case 0:
                     message = .authenticationOk
@@ -170,7 +222,7 @@ final class ProtocolClient: @unchecked Sendable {
                 case 3:
                     message = .authenticationCleartextPassword
                 case 5:
-                    let salt = buffer.readBytes(length: 4)!
+                    let salt = try readBytes(&buffer, length: 4, field: "MD5 salt")
                     message = .authenticationMD5Password(salt)
                 case 7:
                     message = .authenticationGSS
@@ -180,64 +232,80 @@ final class ProtocolClient: @unchecked Sendable {
                     message = .authenticationSSPI
                 case 10:
                     message = .authenticationSasl(
-                        buffer.readNullTerminatedString()!.split(separator: ",").map { String($0) })
+                        try readNullTerminatedString(&buffer, field: "SASL mechanisms")
+                            .split(separator: ",").map { String($0) })
                 case 11:
                     message = .authenticationSaslContinue(
-                        buffer.readString(length: buffer.readableBytes)!)
+                        try readString(
+                            &buffer, length: buffer.readableBytes, field: "SASL challenge"))
                 case 12:
                     message = .authenticationSaslFinal(
-                        buffer.readString(length: buffer.readableBytes)!)
+                        try readString(
+                            &buffer, length: buffer.readableBytes, field: "SASL final message"))
                 default:
                     throw DriverError("Unknown authentication message type: \(authMessageType)")
                 }
             case 75:  // 'K'
-                let processID = buffer.readInteger(as: Int32.self)!
-                let secretKey = buffer.readInteger(as: Int32.self)!
+                let processID = try readInteger(&buffer, as: Int32.self, field: "process ID")
+                let secretKey = try readInteger(&buffer, as: Int32.self, field: "secret key")
                 message = .backendKeyData(processID, secretKey)
             case 50:  // '2'
                 message = .bindComplete
             case 51:  // '3'
                 message = .closeComplete
             case 67:  // 'C'
-                message = .commandComplete(buffer.readNullTerminatedString()!)
+                message = .commandComplete(
+                    try readNullTerminatedString(&buffer, field: "command tag"))
             case 100:  // 'd'
-                message = .copyData(buffer.readBytes(length: buffer.readableBytes)!)
+                message = .copyData(
+                    try readBytes(&buffer, length: buffer.readableBytes, field: "copy data"))
             case 99:  // 'c'
                 message = .copyDone
             case 71:  // 'G'
+                let format = try readInteger(&buffer, as: Int8.self, field: "copy-in format")
+                let columnCount = try readCount(&buffer, field: "copy-in column count")
                 message = .copyInResponse(
-                    buffer.readInteger(as: Int8.self)!,
-                    (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-                        buffer.readInteger(as: Int16.self)!
+                    format,
+                    try (0..<columnCount).map { _ in
+                        try readInteger(&buffer, as: Int16.self, field: "copy-in column format")
                     }
                 )
             case 72:  // 'H'
+                let format = try readInteger(&buffer, as: Int8.self, field: "copy-out format")
+                let columnCount = try readCount(&buffer, field: "copy-out column count")
                 message = .copyOutResponse(
-                    buffer.readInteger(as: Int8.self)!,
-                    (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-                        buffer.readInteger(as: Int16.self)!
+                    format,
+                    try (0..<columnCount).map { _ in
+                        try readInteger(&buffer, as: Int16.self, field: "copy-out column format")
                     }
                 )
             case 87:  // 'W'
+                let format = try readInteger(&buffer, as: Int8.self, field: "copy-both format")
+                let columnCount = try readCount(&buffer, field: "copy-both column count")
                 message = .copyBothResponse(
-                    buffer.readInteger(as: Int8.self)!,
-                    (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-                        buffer.readInteger(as: Int16.self)!
+                    format,
+                    try (0..<columnCount).map { _ in
+                        try readInteger(&buffer, as: Int16.self, field: "copy-both column format")
                     }
                 )
             case 68:  // 'D'
-                message = .dataRow(columns: buffer.readInteger(as: Int16.self)!, columnData: buffer)
+                message = .dataRow(
+                    columns: try readInteger(&buffer, as: Int16.self, field: "data row column count"),
+                    columnData: buffer)
             case 73:  // 'I'
                 message = .emptyQueryResponse
             case 69:  // 'E'
                 message = .errorResponse(decodeServerErrorNoticeMessage(buffer: &buffer))
             case 86:  // 'V'
-                message = .functionCallResponse(buffer.readBytes(length: buffer.readableBytes)!)
+                message = .functionCallResponse(
+                    try readBytes(
+                        &buffer, length: buffer.readableBytes, field: "function call response"))
             case 118:  // 'v'
+                let optionCount = try readCount(&buffer, field: "unrecognized option count")
                 message = .negotiateProtocolVersion(
-                    buffer.readInteger(as: Int32.self)!,
-                    (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-                        buffer.readNullTerminatedString()!
+                    try readInteger(&buffer, as: Int32.self, field: "newest protocol version"),
+                    try (0..<optionCount).map { _ in
+                        try readNullTerminatedString(&buffer, field: "unrecognized option")
                     }
                 )
             case 110:  // 'n'
@@ -245,37 +313,46 @@ final class ProtocolClient: @unchecked Sendable {
             case 78:  // 'N'
                 message = .noticeResponse(decodeServerErrorNoticeMessage(buffer: &buffer))
             case 65:  // 'A'
-                let processID = buffer.readInteger(as: Int32.self)!
-                let channel = buffer.readNullTerminatedString()!
-                let payload = buffer.readNullTerminatedString()!
+                let processID = try readInteger(&buffer, as: Int32.self, field: "process ID")
+                let channel = try readNullTerminatedString(&buffer, field: "notification channel")
+                let payload = try readNullTerminatedString(&buffer, field: "notification payload")
                 message = .notificationResponse(processID, channel, payload)
             case 116:  // 't'
+                let parameterCount = try readCount(&buffer, field: "parameter count")
                 message = .parameterDescription(
-                    (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-                        buffer.readInteger(as: Int32.self)!
+                    try (0..<parameterCount).map { _ in
+                        try readInteger(&buffer, as: Int32.self, field: "parameter type OID")
                     }
                 )
             case 83:  // 'S'
-                let parameter = buffer.readNullTerminatedString()!
-                let value = buffer.readNullTerminatedString()!
+                let parameter = try readNullTerminatedString(&buffer, field: "parameter name")
+                let value = try readNullTerminatedString(&buffer, field: "parameter value")
                 message = .parameterStatus(parameter, value)
             case 49:  // '1'
                 message = .parseComplete
             case 115:  // 's'
                 message = .portalSuspended
             case 90:  // 'Z'
-                message = .readyForQuery(buffer.readInteger(as: UInt8.self)!)
+                message = .readyForQuery(
+                    try readInteger(&buffer, as: UInt8.self, field: "transaction status"))
             case 84:  // 'T'
+                let fieldCount = try readCount(&buffer, field: "row description field count")
                 message = .rowDescription(
-                    (0..<buffer.readInteger(as: Int16.self)!).map { _ in
+                    try (0..<fieldCount).map { _ in
                         .init(
-                            name: buffer.readNullTerminatedString()!,
-                            tableOID: buffer.readInteger(as: Int32.self)!,
-                            columnAttr: buffer.readInteger(as: Int16.self)!,
-                            dataTypeOID: buffer.readInteger(as: Int32.self)!,
-                            dataTypeSize: buffer.readInteger(as: Int16.self)!,
-                            typeModifier: buffer.readInteger(as: Int32.self)!,
-                            formatCode: buffer.readInteger(as: Int16.self)!
+                            name: try readNullTerminatedString(&buffer, field: "field name"),
+                            tableOID: try readInteger(
+                                &buffer, as: Int32.self, field: "table OID"),
+                            columnAttr: try readInteger(
+                                &buffer, as: Int16.self, field: "column attribute"),
+                            dataTypeOID: try readInteger(
+                                &buffer, as: Int32.self, field: "data type OID"),
+                            dataTypeSize: try readInteger(
+                                &buffer, as: Int16.self, field: "data type size"),
+                            typeModifier: try readInteger(
+                                &buffer, as: Int32.self, field: "type modifier"),
+                            formatCode: try readInteger(
+                                &buffer, as: Int16.self, field: "format code")
                         )
                     }
                 )
