@@ -241,6 +241,11 @@ public final class Connection: Sendable {
         portalName: String, stmt: PostgreSQLStatement, params: [PostgreSQLEncodable],
         rowLimit: Int32
     ) async throws {
+        guard params.count == stmt.parameterOids.count else {
+            throw ClientError.codecError(
+                "Parameter count mismatch: expected \(stmt.parameterOids.count), got \(params.count)"
+            )
+        }
         var paramsBuffer = ByteBuffer()
         for (oid, param) in zip(stmt.parameterOids, params) {
             try param.encode(typeOid: oid, buffer: &paramsBuffer)
