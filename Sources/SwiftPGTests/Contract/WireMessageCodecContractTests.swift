@@ -2,7 +2,7 @@ import Testing
 
 @testable import SwiftPG
 
-final class WireMessageRobustnessTests {
+final class WireMessageCodecContractTests {
     @Test func connectThrowsForInvalidBackendMessageLength() async throws {
         let server = ScriptedPostgresServer(
             steps: [.readStartup(write: [PostgresWire.invalidMessageLength()])]
