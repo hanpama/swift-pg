@@ -88,6 +88,8 @@ let liveTLSBadCNEndpoints = [
     postgres16BadCnHostPort,
 ].compactMap { $0 }
 
+let liveTLSEndpoints = liveTLSGoodCNEndpoints + liveTLSBadCNEndpoints
+
 func requireEnvironment(_ value: String?, _ name: String) throws -> String {
     guard let value else {
         throw TestConfigurationError.missingEnvironment(name)
@@ -102,7 +104,7 @@ func liveTrustConnectionConfig(
     ConnectionConfigs(
         socketAddress: socketAddress,
         username: "user_trust",
-        database: "test",
+        database: "postgres",
         sslmode: sslmode
     )
 }
@@ -116,7 +118,7 @@ func livePasswordConnectionConfig(
         socketAddress: socketAddress,
         username: "user_scram_sha_256",
         password: password,
-        database: "test",
+        database: "postgres",
         sslmode: sslmode
     )
 }

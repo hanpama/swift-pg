@@ -4,11 +4,11 @@ import Testing
 
 @testable import SwiftPG
 
-final class CodecTests {
+final class TypeMappingRoundTripTests {
 
     // MARK: - Bool
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodingBool(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesBool(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -41,8 +41,8 @@ final class CodecTests {
         }
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testDecodingBool(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func decodesBool(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -69,8 +69,8 @@ final class CodecTests {
     }
 
     // MARK: - Int16
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodingInt16(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesInt16(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -100,8 +100,8 @@ final class CodecTests {
         }
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testDecodingInt16(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func decodesInt16(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -127,8 +127,8 @@ final class CodecTests {
 
     // MARK: - Int32
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodingInt32(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesInt32(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -158,8 +158,8 @@ final class CodecTests {
         }
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testDecodingInt32(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func decodesInt32(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -183,8 +183,8 @@ final class CodecTests {
     }
 
     // MARK: - Int64
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodingInt64(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesInt64(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -214,8 +214,8 @@ final class CodecTests {
         }
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testDecodingInt64(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func decodesInt64(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -240,8 +240,8 @@ final class CodecTests {
     }
 
     // MARK: - Int
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodingIntFromInt4(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesIntFromInt4(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -271,8 +271,8 @@ final class CodecTests {
         }
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testDecodingIntToInt4(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func decodesIntToInt4(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -296,8 +296,8 @@ final class CodecTests {
         }
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodingIntFromInt8(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesIntFromInt8(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -327,8 +327,8 @@ final class CodecTests {
         }
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testDecodingIntToInt8(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func decodesIntToInt8(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -353,8 +353,8 @@ final class CodecTests {
     }
 
     // MARK: - String
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodingStringFromText(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesStringFromText(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -384,8 +384,8 @@ final class CodecTests {
         }
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testDecodingStringFromText(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func decodesStringFromText(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -409,8 +409,8 @@ final class CodecTests {
         }
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodingStringFromVarchar(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesStringFromVarchar(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -440,8 +440,8 @@ final class CodecTests {
         }
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testDecodingStringFromVarchar(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func decodesStringFromVarchar(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -466,8 +466,8 @@ final class CodecTests {
     }
 
     // MARK: - Float
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodingFloat(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesFloat(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -496,8 +496,8 @@ final class CodecTests {
             #expect(got4)
         }
     }
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testDecodingFloat(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func decodesFloat(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -522,8 +522,8 @@ final class CodecTests {
     }
 
     // MARK: - Double
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodingDouble(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesDouble(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -552,8 +552,8 @@ final class CodecTests {
             #expect(got4)
         }
     }
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testDecodingDouble(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func decodesDouble(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -578,8 +578,8 @@ final class CodecTests {
     }
 
     // MARK: - Decimal
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodingDecimal(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesDecimal(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -632,8 +632,8 @@ final class CodecTests {
         }
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testDecodingDecimal(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func decodesDecimal(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -679,8 +679,8 @@ final class CodecTests {
     }
 
     // MARK: - Date
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodingDate(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesDate(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -717,8 +717,8 @@ final class CodecTests {
         }
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testDecodingDate(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func decodesDate(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -752,8 +752,8 @@ final class CodecTests {
     }
 
     // MARK: - UUID
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodingUUID(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesUUID(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -790,8 +790,8 @@ final class CodecTests {
         }
     }
 
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testDecodingUUID(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func decodesUUID(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
@@ -825,8 +825,8 @@ final class CodecTests {
     }
 
     // MARK: - Any
-    @Test(arguments: [postgres17HostPort, postgres16HostPort])
-    func testEncodeAny(socketAddress: ConnectionConfigs.SocketAddress) async throws {
+    @Test(arguments: liveHostPortEndpoints)
+    func encodesAnyValue(socketAddress: ConnectionConfigs.SocketAddress) async throws {
         let connection = try await createTestConnection(socketAddress: socketAddress)
 
         let rows = try await connection.query(
