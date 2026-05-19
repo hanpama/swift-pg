@@ -37,5 +37,10 @@ let package = Package(
       name: "SwiftPGTests",
       dependencies: ["SwiftPG"]
     ),
+    .testTarget(
+      name: "SwiftPGPublicAPITests",
+      dependencies: ["SwiftPG"],
+      path: "Sources/SwiftPGPublicAPITests"
+    ),
   ]
 )
