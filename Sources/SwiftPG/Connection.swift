@@ -23,17 +23,6 @@ public final class Connection: Sendable {
             configs: configs
         )
         protocolCiientBox.withLockedValue { $0 = protocolClient }
-
-        try await send(.startupMessage(configs.username, configs.database))
-        do {
-            try await authenticate(username: configs.username, password: configs.password)
-            try await waitKeyData()
-            try await readyForQuery()
-        } catch {
-            try await protocolClient.close()
-            protocolCiientBox.withLockedValue { $0 = nil }
-            throw error
-        }
     }
 
     public func close() async throws {
@@ -266,22 +255,6 @@ public final class Connection: Sendable {
         try await send(.sync)
     }
 
-    private func waitKeyData() async throws {
-        loop: while true {
-            let message = try await receive()
-            switch message {
-            case .backendKeyData(_, _):
-                break loop
-            case .errorResponse(let errorMessage):
-                throw DatabaseError.from(errorMessage: errorMessage)
-            case .noticeResponse(_), .notificationResponse(_, _, _), .parameterStatus(_, _):
-                break
-            default:
-                throw DriverError("Unexpected message: \(message)")
-            }
-        }
-    }
-
     private func readyForQuery() async throws {
         loop: while true {
             let message = try await receive()
@@ -294,74 +267,6 @@ public final class Connection: Sendable {
                 break
             default:
                 throw DriverError("Unexpected message: \(message)")
-            }
-        }
-    }
-
-    private func authenticate(username: String, password: String) async throws {
-        var scramSha256Authenticator: ScramSha256Authenticator?
-
-        loop: while true {
-            let message = try await receive()
-            switch message {
-            case .authenticationOk:
-                break loop
-
-            case .authenticationSasl(let mechanisms):
-                if mechanisms.contains("SCRAM-SHA-256") || mechanisms.contains("SCRAM-SHA-256-PLUS") {
-                    let authenticator = try ScramSha256Authenticator(
-                        username: username, password: password)
-                    scramSha256Authenticator = authenticator
-
-                    try await send(
-                        .saslInitialResponse(
-                            mechanism: "SCRAM-SHA-256",
-                            initialResponse: authenticator.formatClientFirstMessage()
-                        )
-                    )
-                } else {
-                    throw DriverError("No supported SASL mechanism found. Supported: \(mechanisms)")
-                }
-
-            case .authenticationSaslContinue(let challenge):
-                guard let scramSha256Authenticator else {
-                    throw DriverError("Received SASL challenge before SASL authentication started")
-                }
-                try scramSha256Authenticator.handleServerFirstMessage(challenge)
-
-                try await send(
-                    .saslResponse(scramSha256Authenticator.formatClientFinalMessage())
-                )
-
-            case .authenticationSaslFinal(let finalMessage):
-                guard let scramSha256Authenticator else {
-                    throw DriverError("Received SASL final message before SASL authentication started")
-                }
-                try scramSha256Authenticator.handleServerFinalMessage(finalMessage)
-
-            case .authenticationCleartextPassword:
-                throw DriverError("Unsupported authentication method: cleartext password")
-
-            case .authenticationMD5Password:
-                throw DriverError("Unsupported authentication method: MD5 password")
-
-            case .authenticationKerberosV5:
-                throw DriverError("Unsupported authentication method: Kerberos V5")
-
-            case .authenticationGSS:
-                throw DriverError("Unsupported authentication method: GSS")
-
-            case .authenticationGSSContinue:
-                throw DriverError("Unsupported authentication method: GSS continuation")
-
-            case .authenticationSSPI:
-                throw DriverError("Unsupported authentication method: SSPI")
-
-            case .errorResponse(let errorMessage):
-                throw DatabaseError.from(errorMessage: errorMessage)
-
-            default:
-                throw DriverError("Unexpected authentication message: \(message)")
             }
         }
     }

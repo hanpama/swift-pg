@@ -41,30 +41,48 @@ final class ProtocolClient: @unchecked Sendable {
             throw error
         }
 
-        try await channelReady.futureResult.get()
+        do {
+            try await channelReady.futureResult.get()
+            try await Self.performStartup(on: channel, configs: configs)
 
-        let asyncChannel = try await channel.eventLoop.submit {
-            try NIOAsyncChannel<PostgreSQLBackendMessage, PostgreSQLFrontendMessage>(
-                wrappingChannelSynchronously: channel
-            )
-        }.get()
+            let asyncChannel = try await channel.eventLoop.submit {
+                try NIOAsyncChannel<PostgreSQLBackendMessage, PostgreSQLFrontendMessage>(
+                    wrappingChannelSynchronously: channel
+                )
+            }.get()
 
-        let ioPromise = loop.makePromise(of: (Inbound, Outbound).self)
+            let ioPromise = loop.makePromise(of: (Inbound, Outbound).self)
 
-        Task {
-            do {
-                try await asyncChannel.executeThenClose { inbound, outbound in
-                    ioPromise.succeed((inbound, outbound))
-                    try await channel.closeFuture.get()
+            Task {
+                do {
+                    try await asyncChannel.executeThenClose { inbound, outbound in
+                        ioPromise.succeed((inbound, outbound))
+                        try await channel.closeFuture.get()
+                    }
+                } catch {
+                    ioPromise.fail(error)
                 }
-            } catch {
-                ioPromise.fail(error)
             }
+            let (inbound, outbound) = try await ioPromise.futureResult.get()
+            self.inbound = inbound.makeAsyncIterator()
+            self.outbound = outbound
+            self.channel = channel
+        } catch {
+            try? await channel.close()
+            throw error
         }
-        let (inbound, outbound) = try await ioPromise.futureResult.get()
-        self.inbound = inbound.makeAsyncIterator()
-        self.outbound = outbound
-        self.channel = channel
+    }
+
+    private static func performStartup(on channel: any Channel, configs: ConnectionConfigs) async throws {
+        let promise = channel.eventLoop.makePromise(of: Void.self)
+        let handler = StartupHandler(configs: configs, promise: promise)
+        try await channel.pipeline.addHandler(handler).get()
+        do {
+            try await promise.futureResult.get()
+            try await channel.pipeline.removeHandler(handler).get()
+        } catch {
+            throw error
+        }
     }
 
     func send(_ message: PostgreSQLFrontendMessage) async throws {
@@ -566,6 +584,170 @@ final class ProtocolClient: @unchecked Sendable {
         func errorCaught(context: ChannelHandlerContext, error: Error) {
             context.fireErrorCaught(error)
             promise.fail(error)
+        }
+    }
+
+    private final class StartupHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
+        typealias InboundIn = PostgreSQLBackendMessage
+        typealias OutboundOut = PostgreSQLFrontendMessage
+
+        private let configs: ConnectionConfigs
+        private let promise: EventLoopPromise<Void>
+        private var completed = false
+        private var authenticated = false
+        private var receivedBackendKeyData = false
+        private var scramSha256Authenticator: ScramSha256Authenticator?
+        private var lastServerError: DatabaseError?
+
+        init(configs: ConnectionConfigs, promise: EventLoopPromise<Void>) {
+            self.configs = configs
+            self.promise = promise
+        }
+
+        func handlerAdded(context: ChannelHandlerContext) {
+            send(.startupMessage(configs.username, configs.database), context: context)
+        }
+
+        func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+            let message = unwrapInboundIn(data)
+            do {
+                try handle(message, context: context)
+            } catch {
+                fail(error, context: context)
+            }
+        }
+
+        func channelInactive(context: ChannelHandlerContext) {
+            if let lastServerError {
+                fail(lastServerError, context: context)
+            } else {
+                fail(ClientError.connectionError("Connection closed during startup"), context: context)
+            }
+            context.fireChannelInactive()
+        }
+
+        func errorCaught(context: ChannelHandlerContext, error: Error) {
+            if let lastServerError {
+                fail(lastServerError, context: context)
+            } else {
+                fail(error, context: context)
+            }
+            context.fireErrorCaught(error)
+        }
+
+        private func handle(_ message: PostgreSQLBackendMessage, context: ChannelHandlerContext)
+            throws
+        {
+            guard !completed else {
+                return
+            }
+
+            switch message {
+            case .authenticationOk:
+                authenticated = true
+
+            case .authenticationSasl(let mechanisms):
+                guard
+                    mechanisms.contains("SCRAM-SHA-256")
+                        || mechanisms.contains("SCRAM-SHA-256-PLUS")
+                else {
+                    throw DriverError("No supported SASL mechanism found. Supported: \(mechanisms)")
+                }
+
+                let authenticator = try ScramSha256Authenticator(
+                    username: configs.username,
+                    password: configs.password
+                )
+                scramSha256Authenticator = authenticator
+                send(
+                    .saslInitialResponse(
+                        mechanism: "SCRAM-SHA-256",
+                        initialResponse: authenticator.formatClientFirstMessage()
+                    ),
+                    context: context
+                )
+
+            case .authenticationSaslContinue(let challenge):
+                guard let scramSha256Authenticator else {
+                    throw DriverError("Received SASL challenge before SASL authentication started")
+                }
+                try scramSha256Authenticator.handleServerFirstMessage(challenge)
+                send(
+                    .saslResponse(try scramSha256Authenticator.formatClientFinalMessage()),
+                    context: context
+                )
+
+            case .authenticationSaslFinal(let finalMessage):
+                guard let scramSha256Authenticator else {
+                    throw DriverError("Received SASL final message before SASL authentication started")
+                }
+                try scramSha256Authenticator.handleServerFinalMessage(finalMessage)
+
+            case .authenticationCleartextPassword:
+                throw DriverError("Unsupported authentication method: cleartext password")
+
+            case .authenticationMD5Password:
+                throw DriverError("Unsupported authentication method: MD5 password")
+
+            case .authenticationKerberosV5:
+                throw DriverError("Unsupported authentication method: Kerberos V5")
+
+            case .authenticationGSS:
+                throw DriverError("Unsupported authentication method: GSS")
+
+            case .authenticationGSSContinue:
+                throw DriverError("Unsupported authentication method: GSS continuation")
+
+            case .authenticationSSPI:
+                throw DriverError("Unsupported authentication method: SSPI")
+
+            case .backendKeyData:
+                guard authenticated else {
+                    throw DriverError("Received backend key data before authentication completed")
+                }
+                receivedBackendKeyData = true
+
+            case .readyForQuery:
+                guard authenticated else {
+                    throw DriverError("Received ready for query before authentication completed")
+                }
+                guard receivedBackendKeyData else {
+                    throw DriverError("Received ready for query before backend key data")
+                }
+                succeed()
+
+            case .errorResponse(let errorMessage):
+                let error = DatabaseError.from(errorMessage: errorMessage)
+                lastServerError = error
+                fail(error, context: context)
+
+            case .noticeResponse, .notificationResponse, .parameterStatus:
+                break
+
+            default:
+                throw DriverError("Unexpected startup message: \(message)")
+            }
+        }
+
+        private func send(_ message: PostgreSQLFrontendMessage, context: ChannelHandlerContext) {
+            context.writeAndFlush(wrapOutboundOut(message), promise: nil)
+        }
+
+        private func succeed() {
+            guard !completed else {
+                return
+            }
+            completed = true
+            promise.succeed(())
+        }
+
+        private func fail(_ error: Error, context: ChannelHandlerContext) {
+            guard !completed else {
+                return
+            }
+            completed = true
+            promise.fail(error)
+            context.close(promise: nil)
         }
     }
 }
