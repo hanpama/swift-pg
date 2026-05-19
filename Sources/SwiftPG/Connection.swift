@@ -217,6 +217,9 @@ public final class Connection: Sendable {
             case .rowDescription(let descriptions):
                 fields = descriptions
                 break loop
+            case .noData:
+                fields = []
+                break loop
             case .parameterDescription(let oids):
                 parameterOids = oids
             case .errorResponse(let errorMessage):
@@ -225,7 +228,13 @@ public final class Connection: Sendable {
                 break
             }
         }
-        return PostgreSQLStatement(name: name, fields: fields!, parameterOids: parameterOids!)
+        guard let fields else {
+            throw DriverError("Missing row description")
+        }
+        guard let parameterOids else {
+            throw DriverError("Missing parameter description")
+        }
+        return PostgreSQLStatement(name: name, fields: fields, parameterOids: parameterOids)
     }
 
     private func execStmt(
