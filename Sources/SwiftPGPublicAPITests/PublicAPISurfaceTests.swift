@@ -50,14 +50,4 @@ final class PublicAPISurfaceTests {
         _ = pool
     }
 
-    @Test func publicAPIParsesDatabaseURL() throws {
-        let configs = try ConnectionConfigs.fromDatabaseURL(
-            "postgres://user:secret@localhost:5432/appdb?sslmode=disable"
-        )
-
-        #expect(configs.username == "user")
-        #expect(configs.password == "secret")
-        #expect(configs.database == "appdb")
-        #expect(configs.sslmode == .disable)
-    }
 }

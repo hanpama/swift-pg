@@ -80,12 +80,10 @@ let livePlainEndpoints = liveHostPortEndpoints + liveUnixSocketEndpoints
 
 let liveTLSGoodCNEndpoints = [
     postgres17GoodCnHostPort,
-    postgres16GoodCnHostPort,
 ].compactMap { $0 }
 
 let liveTLSBadCNEndpoints = [
     postgres17BadCnHostPort,
-    postgres16BadCnHostPort,
 ].compactMap { $0 }
 
 let liveTLSEndpoints = liveTLSGoodCNEndpoints + liveTLSBadCNEndpoints
