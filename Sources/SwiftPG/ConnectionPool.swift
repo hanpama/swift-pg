@@ -9,7 +9,7 @@ public final actor ConnectionPool {
     private var availables: [Connection] = []
     private var waiters: [Waiter] = []
 
-    init(
+    public init(
         configuration: ConnectionConfigs,
         maxConnections: Int,
         eventLoopGroup: EventLoopGroup = MultiThreadedEventLoopGroup.singleton

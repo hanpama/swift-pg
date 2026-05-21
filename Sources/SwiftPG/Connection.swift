@@ -9,9 +9,15 @@ public final class Connection: Sendable {
     private let eventLoopGroup: EventLoopGroup
     let defaultDecoderMap: [Int32: PostgreSQLDecodable.Type] = DEFAULT_DECODER_MAP
     private let protocolCiientBox: NIOLockedValueBox<ProtocolClient?> = .init(nil)
-    private let currentTaskBox: NIOLockedValueBox<Task<Void, Swift.Error>?> = .init(nil)
+    private let currentTaskBox: NIOLockedValueBox<CurrentTask> = .init(.idle)
     private let connectionErrorBox: NIOLockedValueBox<Swift.Error?> = .init(nil)
     // private let query
+
+    private enum CurrentTask: Sendable {
+        case idle
+        case starting
+        case running(Task<Void, Swift.Error>)
+    }
 
     public init(eventLoopGroup: EventLoopGroup = MultiThreadedEventLoopGroup.singleton) {
         self.eventLoopGroup = eventLoopGroup
@@ -23,24 +29,17 @@ public final class Connection: Sendable {
             configs: configs
         )
         protocolCiientBox.withLockedValue { $0 = protocolClient }
-
-        try await send(.startupMessage(configs.username, configs.database))
-        do {
-            try await authenticate(username: configs.username, password: configs.password)
-            try await waitKeyData()
-            try await readyForQuery()
-        } catch {
-            try await protocolClient.close()
-            protocolCiientBox.withLockedValue { $0 = nil }
-            throw error
-        }
     }
 
     public func close() async throws {
         cancelCurrentTask()
+        await closeProtocolClient()
+    }
+
+    private func closeProtocolClient() async {
         let protocolClient = protocolCiientBox.withLockedValue { $0 }
-        try await protocolClient?.send(.terminate)
-        try await protocolClient?.close()
+        try? await protocolClient?.send(.terminate)
+        try? await protocolClient?.close()
     }
 
     public func isConnected() -> Bool {
@@ -59,27 +58,37 @@ public final class Connection: Sendable {
 
     public func query(_ sql: String, _ params: [PostgreSQLEncodable] = []) async throws -> PostgreSQLRows {
         let promise = eventLoopGroup.next().makePromise(of: PostgreSQLRows.self)
-        try withCurrentTask {
-            do {
-                let stmt = try await self.parseStmt(name: "", sql: sql)
-                try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
-                try await self.sync()
-
-                let rows = PostgreSQLRows()
-                promise.succeed(rows)
+        do {
+            try withCurrentTask {
+                var syncSent = false
                 do {
-                    while let row = try await self.receiveRow(stmt: stmt, rowLimit: 0) {
-                        await rows.channel.send(row)
+                    let stmt = try await self.parseStmt(name: "", sql: sql)
+                    try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
+                    try await self.sync()
+                    syncSent = true
+
+                    let rows = PostgreSQLRows()
+                    promise.succeed(rows)
+                    do {
+                        while let row = try await self.receiveRow(stmt: stmt, rowLimit: 0) {
+                            await rows.channel.send(row)
+                        }
+                        rows.channel.finish()
+                    } catch {
+                        rows.channel.fail(error)
+                        throw error
                     }
-                    rows.channel.finish()
                 } catch {
-                    rows.channel.fail(error)
+                    if !syncSent {
+                        try? await self.sync()
+                    }
+                    promise.fail(error)
                     throw error
                 }
-            } catch {
-                promise.fail(error)
-                throw error
             }
+        } catch {
+            promise.fail(error)
+            throw error
         }
         return try await withTaskCancellationHandler {
             try await promise.futureResult.get()
@@ -90,17 +99,27 @@ public final class Connection: Sendable {
 
     public func execute(_ sql: String, _ params: [PostgreSQLEncodable] = []) async throws {
         let promise = eventLoopGroup.next().makePromise(of: Void.self)
-        try withCurrentTask {
-            do {
-                let stmt = try await self.parseStmt(name: "", sql: sql)
-                try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
-                try await self.sync()
-                try await self.drainUntilCommandComplete()
-                promise.succeed(())
-            } catch {
-                promise.fail(error)
-                throw error
+        do {
+            try withCurrentTask {
+                var syncSent = false
+                do {
+                    let stmt = try await self.parseStmt(name: "", sql: sql)
+                    try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
+                    try await self.sync()
+                    syncSent = true
+                    try await self.drainUntilCommandComplete()
+                    promise.succeed(())
+                } catch {
+                    if !syncSent {
+                        try? await self.sync()
+                    }
+                    promise.fail(error)
+                    throw error
+                }
             }
+        } catch {
+            promise.fail(error)
+            throw error
         }
         try await withTaskCancellationHandler {
             try await promise.futureResult.get()
@@ -111,31 +130,41 @@ public final class Connection: Sendable {
 
     public func batchQuery(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws -> PostgreSQLRows {
         let promise = eventLoopGroup.next().makePromise(of: PostgreSQLRows.self)
-        try withCurrentTask {
-            do {
-                let stmt = try await self.parseStmt(name: "", sql: sql)
-                for params in batches {
-                    try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
-                }
-                try await self.sync()
-
-                let rows = PostgreSQLRows()
-                promise.succeed(rows)
+        do {
+            try withCurrentTask {
+                var syncSent = false
                 do {
-                    for _ in batches {
-                        while let row = try await self.receiveRow(stmt: stmt, rowLimit: 0) {
-                            await rows.channel.send(row)
-                        }
+                    let stmt = try await self.parseStmt(name: "", sql: sql)
+                    for params in batches {
+                        try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
                     }
-                    rows.channel.finish()
+                    try await self.sync()
+                    syncSent = true
+
+                    let rows = PostgreSQLRows()
+                    promise.succeed(rows)
+                    do {
+                        for _ in batches {
+                            while let row = try await self.receiveRow(stmt: stmt, rowLimit: 0) {
+                                await rows.channel.send(row)
+                            }
+                        }
+                        rows.channel.finish()
+                    } catch {
+                        rows.channel.fail(error)
+                        throw error
+                    }
                 } catch {
-                    rows.channel.fail(error)
+                    if !syncSent {
+                        try? await self.sync()
+                    }
+                    promise.fail(error)
                     throw error
                 }
-            } catch {
-                promise.fail(error)
-                throw error
             }
+        } catch {
+            promise.fail(error)
+            throw error
         }
         return try await withTaskCancellationHandler {
             try await promise.futureResult.get()
@@ -146,21 +175,31 @@ public final class Connection: Sendable {
 
     public func batchExecute(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws {
         let promise = eventLoopGroup.next().makePromise(of: Void.self)
-        try withCurrentTask {
-            do {
-                let stmt = try await self.parseStmt(name: "", sql: sql)
-                for params in batches {
-                    try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
+        do {
+            try withCurrentTask {
+                var syncSent = false
+                do {
+                    let stmt = try await self.parseStmt(name: "", sql: sql)
+                    for params in batches {
+                        try await self.execStmt(portalName: "", stmt: stmt, params: params, rowLimit: 0)
+                    }
+                    try await self.sync()
+                    syncSent = true
+                    for _ in batches {
+                        try await self.drainUntilCommandComplete()
+                    }
+                    promise.succeed(())
+                } catch {
+                    if !syncSent {
+                        try? await self.sync()
+                    }
+                    promise.fail(error)
+                    throw error
                 }
-                try await self.sync()
-                for _ in batches {
-                    try await self.drainUntilCommandComplete()
-                }
-                promise.succeed(())
-            } catch {
-                promise.fail(error)
-                throw error
             }
+        } catch {
+            promise.fail(error)
+            throw error
         }
         try await withTaskCancellationHandler {
             try await promise.futureResult.get()
@@ -217,6 +256,9 @@ public final class Connection: Sendable {
             case .rowDescription(let descriptions):
                 fields = descriptions
                 break loop
+            case .noData:
+                fields = []
+                break loop
             case .parameterDescription(let oids):
                 parameterOids = oids
             case .errorResponse(let errorMessage):
@@ -225,13 +267,24 @@ public final class Connection: Sendable {
                 break
             }
         }
-        return PostgreSQLStatement(name: name, fields: fields!, parameterOids: parameterOids!)
+        guard let fields else {
+            throw DriverError("Missing row description")
+        }
+        guard let parameterOids else {
+            throw DriverError("Missing parameter description")
+        }
+        return PostgreSQLStatement(name: name, fields: fields, parameterOids: parameterOids)
     }
 
     private func execStmt(
         portalName: String, stmt: PostgreSQLStatement, params: [PostgreSQLEncodable],
         rowLimit: Int32
     ) async throws {
+        guard params.count == stmt.parameterOids.count else {
+            throw ClientError.codecError(
+                "Parameter count mismatch: expected \(stmt.parameterOids.count), got \(params.count)"
+            )
+        }
         var paramsBuffer = ByteBuffer()
         for (oid, param) in zip(stmt.parameterOids, params) {
             try param.encode(typeOid: oid, buffer: &paramsBuffer)
@@ -252,22 +305,6 @@ public final class Connection: Sendable {
         try await send(.sync)
     }
 
-    private func waitKeyData() async throws {
-        loop: while true {
-            let message = try await receive()
-            switch message {
-            case .backendKeyData(_, _):
-                break loop
-            case .errorResponse(let errorMessage):
-                throw DatabaseError.from(errorMessage: errorMessage)
-            case .noticeResponse(_), .notificationResponse(_, _, _), .parameterStatus(_, _):
-                break
-            default:
-                throw DriverError("Unexpected message: \(message)")
-            }
-        }
-    }
-
     private func readyForQuery() async throws {
         loop: while true {
             let message = try await receive()
@@ -280,48 +317,6 @@ public final class Connection: Sendable {
                 break
             default:
                 throw DriverError("Unexpected message: \(message)")
-            }
-        }
-    }
-
-    private func authenticate(username: String, password: String) async throws {
-        var scramSha256Authenticator: ScramSha256Authenticator?
-
-        loop: while true {
-            switch try await receive() {
-            case .authenticationOk:
-                break loop
-
-            case .authenticationSasl(let mechanisms):
-                if mechanisms.contains("SCRAM-SHA-256") || mechanisms.contains("SCRAM-SHA-256-PLUS") {
-                    scramSha256Authenticator = try ScramSha256Authenticator(
-                        username: username, password: password)
-
-                    try await send(
-                        .saslInitialResponse(
-                            mechanism: "SCRAM-SHA-256",
-                            initialResponse: scramSha256Authenticator!.formatClientFirstMessage()
-                        )
-                    )
-                } else {
-                    throw DriverError("No supported SASL mechanism found. Supported: \(mechanisms)")
-                }
-
-            case .authenticationSaslContinue(let challenge):
-                try scramSha256Authenticator!.handleServerFirstMessage(challenge)
-
-                try await send(
-                    .saslResponse(scramSha256Authenticator!.formatClientFinalMessage())
-                )
-
-            case .authenticationSaslFinal(let finalMessage):
-                try scramSha256Authenticator!.handleServerFinalMessage(finalMessage)
-
-            case .errorResponse(let errorMessage):
-                throw DatabaseError.from(errorMessage: errorMessage)
-
-            default:
-                break
             }
         }
     }
@@ -349,35 +344,71 @@ public final class Connection: Sendable {
     }
 
     private func withCurrentTask(_ op: @Sendable @escaping @isolated(any) () async throws -> Void) throws {
-        let task = Task(operation: op)
         try currentTaskBox.withLockedValue({ currentTask in
-            guard case .none = currentTask else {
+            guard case .idle = currentTask else {
                 throw ClientError.concurrencyError("Operation already in progress")
             }
-            currentTask = task
+            currentTask = .starting
         })
-        Task {
-            do { try await task.value }
-            currentTaskBox.withLockedValue { $0 = nil }
 
+        let startPromise = eventLoopGroup.next().makePromise(of: Void.self)
+        let task = Task {
+            try await startPromise.futureResult.get()
             do {
-                try await readyForQuery()
+                try await op()
             } catch {
-                // print("withCurrentTask readyForQuery error: \(error)")
-                try await close()
+                await drainReadyForQueryOrClose()
+                finishCurrentTask()
+                throw error
             }
+            await drainReadyForQueryOrClose()
+            finishCurrentTask()
+        }
+
+        let shouldStart = currentTaskBox.withLockedValue { currentTask in
+            guard case .starting = currentTask else {
+                return false
+            }
+            currentTask = .running(task)
+            return true
+        }
+        if shouldStart {
+            startPromise.succeed(())
+        } else {
+            task.cancel()
+            startPromise.fail(CancellationError())
         }
     }
 
+    private func drainReadyForQueryOrClose() async {
+        do {
+            try await readyForQuery()
+        } catch {
+            await closeProtocolClient()
+        }
+    }
+
+    private func finishCurrentTask() {
+        currentTaskBox.withLockedValue { $0 = .idle }
+    }
+
     private func cancelCurrentTask() {
-        currentTaskBox.withLockedValue {
-            $0?.cancel()
-            $0 = nil
+        currentTaskBox.withLockedValue { currentTask in
+            if case .running(let task) = currentTask {
+                task.cancel()
+            }
+            currentTask = .idle
         }
     }
 
     func waitCurrentTask() async throws {
-        try await currentTaskBox.withLockedValue { $0 }?.value
+        let currentTask = currentTaskBox.withLockedValue { currentTask -> Task<Void, Swift.Error>? in
+            if case .running(let task) = currentTask {
+                return task
+            }
+            return nil
+        }
+        try await currentTask?.value
     }
 }
 
@@ -415,16 +446,31 @@ public struct PostgreSQLRow: Sendable {
     public func decode<each V>() throws -> (repeat each V) {
         var buffer = columns
         var fieldsIterator: IndexingIterator<[Int32]> = fieldOids.makeIterator()
-        return (repeat try get((each V).self, fieldsIterator.next()!, &buffer))
+        return (repeat try get((each V).self, nextOid(&fieldsIterator), &buffer))
+    }
+
+    private func nextOid(_ fieldsIterator: inout IndexingIterator<[Int32]>) throws -> Int32 {
+        guard let oid = fieldsIterator.next() else {
+            throw ClientError.codecError("Requested more values than row contains")
+        }
+        return oid
     }
 
     private func get<T>(_ type: T.Type, _ oid: Int32, _ buf: inout ByteBuffer) throws -> T {
         if let type = type as? PostgreSQLDecodable.Type {
-            return try type.init(pgTypeOid: oid, buffer: &buf) as! T
+            let value = try type.init(pgTypeOid: oid, buffer: &buf)
+            guard let typedValue = value as? T else {
+                throw ClientError.codecError("Decoded value cannot be cast to \(T.self)")
+            }
+            return typedValue
         }
         if type == PostgreSQLDecodable.self || type == Any.self {
             if let type = defaultDecoderMap[oid] {
-                return try type.init(pgTypeOid: oid, buffer: &buf) as! T
+                let value = try type.init(pgTypeOid: oid, buffer: &buf)
+                guard let typedValue = value as? T else {
+                    throw ClientError.codecError("Decoded value cannot be cast to \(T.self)")
+                }
+                return typedValue
             }
         }
         throw ClientError.codecError("Cannot decode \(type)")

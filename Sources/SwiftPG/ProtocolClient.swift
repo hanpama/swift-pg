@@ -21,50 +21,123 @@ final class ProtocolClient: @unchecked Sendable {
             }
 
         let channel: any Channel
-        let channelReady = loop.makePromise(of: Void.self)
-        var handlers: [ChannelHandler] = [
-            ByteToMessageHandler(messageCodec),
-            MessageToByteHandler(messageCodec),
-        ]
-        if let sslHandler = try Self.getTLSHandler(configs: configs) {
-            handlers.insert(sslHandler, at: 0)
-        }
-        handlers.append(ReadyForStartupHandler(promise: channelReady, tls: configs.sslmode != .disable))
         do {
             channel = try await ClientBootstrap(group: loop)
-                .channelInitializer { channel in
-                    channel.pipeline.addHandlers(handlers)
-                }
                 .connect(to: socketAddress).get()
         } catch {
-            channelReady.fail(error)
             throw error
         }
 
-        try await channelReady.futureResult.get()
-
-        let asyncChannel = try await channel.eventLoop.submit {
-            try NIOAsyncChannel<PostgreSQLBackendMessage, PostgreSQLFrontendMessage>(
-                wrappingChannelSynchronously: channel
-            )
-        }.get()
-
-        let ioPromise = loop.makePromise(of: (Inbound, Outbound).self)
-
-        Task {
-            do {
-                try await asyncChannel.executeThenClose { inbound, outbound in
-                    ioPromise.succeed((inbound, outbound))
-                    try await channel.closeFuture.get()
-                }
-            } catch {
-                ioPromise.fail(error)
+        do {
+            if configs.sslmode != .disable {
+                try await Self.performSSLNegotiation(on: channel)
+                try await Self.performTLSHandshake(on: channel, configs: configs)
             }
+            try await Self.addMessageCodecHandlers(messageCodec, to: channel)
+            try await Self.performStartup(on: channel, configs: configs)
+
+            let asyncChannel = try await channel.eventLoop.submit {
+                try NIOAsyncChannel<PostgreSQLBackendMessage, PostgreSQLFrontendMessage>(
+                    wrappingChannelSynchronously: channel
+                )
+            }.get()
+
+            let ioPromise = loop.makePromise(of: (Inbound, Outbound).self)
+
+            Task {
+                do {
+                    try await asyncChannel.executeThenClose { inbound, outbound in
+                        ioPromise.succeed((inbound, outbound))
+                        try await channel.closeFuture.get()
+                    }
+                } catch {
+                    ioPromise.fail(error)
+                }
+            }
+            let (inbound, outbound) = try await ioPromise.futureResult.get()
+            self.inbound = inbound.makeAsyncIterator()
+            self.outbound = outbound
+            self.channel = channel
+        } catch {
+            try? await channel.close()
+            throw error
         }
-        let (inbound, outbound) = try await ioPromise.futureResult.get()
-        self.inbound = inbound.makeAsyncIterator()
-        self.outbound = outbound
-        self.channel = channel
+    }
+
+    private static func addMessageCodecHandlers(
+        _ messageCodec: MessageCodec,
+        to channel: any Channel
+    ) async throws {
+        try await channel.eventLoop.submit {
+            try channel.pipeline.syncOperations.addHandler(ByteToMessageHandler(messageCodec))
+            try channel.pipeline.syncOperations.addHandler(MessageToByteHandler(messageCodec))
+        }.get()
+    }
+
+    private static func performSSLNegotiation(on channel: any Channel) async throws {
+        let promise = channel.eventLoop.makePromise(of: Void.self)
+        let handler = SSLRequestHandler(promise: promise)
+        do {
+            try await channel.pipeline.addHandler(handler).get()
+        } catch {
+            promise.fail(error)
+            throw error
+        }
+
+        do {
+            try await promise.futureResult.get()
+            try await channel.pipeline.removeHandler(handler).get()
+        } catch {
+            try? await channel.pipeline.removeHandler(handler).get()
+            throw error
+        }
+    }
+
+    private static func performTLSHandshake(
+        on channel: any Channel,
+        configs: ConnectionConfigs
+    ) async throws {
+        let promise = channel.eventLoop.makePromise(of: Void.self)
+        let handler = TLSHandshakeHandler(promise: promise)
+        do {
+            try await channel.eventLoop.submit {
+                guard let tlsHandler = try Self.getTLSHandler(configs: configs) else {
+                    throw ClientError.configurationError("TLS handler is required for TLS handshake")
+                }
+                try channel.pipeline.syncOperations.addHandler(tlsHandler)
+                try channel.pipeline.syncOperations.addHandler(handler)
+            }.get()
+        } catch {
+            promise.fail(error)
+            throw error
+        }
+
+        do {
+            try await promise.futureResult.get()
+            try await channel.pipeline.removeHandler(handler).get()
+        } catch {
+            try? await channel.pipeline.removeHandler(handler).get()
+            throw error
+        }
+    }
+
+    private static func performStartup(on channel: any Channel, configs: ConnectionConfigs) async throws {
+        let promise = channel.eventLoop.makePromise(of: Void.self)
+        let handler = StartupHandler(configs: configs, promise: promise)
+        do {
+            try await channel.pipeline.addHandler(handler).get()
+        } catch {
+            promise.fail(error)
+            throw error
+        }
+
+        do {
+            try await promise.futureResult.get()
+            try await channel.pipeline.removeHandler(handler).get()
+        } catch {
+            try? await channel.pipeline.removeHandler(handler).get()
+            throw error
+        }
     }
 
     func send(_ message: PostgreSQLFrontendMessage) async throws {
@@ -119,7 +192,13 @@ final class ProtocolClient: @unchecked Sendable {
             throw ClientError.configurationError("Host is required for TLS connections")
         }
         let sslContext = try NIOSSLContext(configuration: tlsConfig)
-        let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
+        let serverHostname: String? =
+            if case .verifyFull = configs.sslmode {
+                host
+            } else {
+                nil
+            }
+        let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: serverHostname)
         return sslHandler
     }
 
@@ -138,8 +217,13 @@ final class ProtocolClient: @unchecked Sendable {
             guard buffer.readableBytes >= 5 else {
                 return .needMoreData
             }
-            let messageType = buffer.getInteger(at: buffer.readerIndex, as: UInt8.self)!
-            let messageLength = buffer.getInteger(at: buffer.readerIndex + 1, as: Int32.self)!
+            guard
+                let messageType = buffer.getInteger(at: buffer.readerIndex, as: UInt8.self),
+                let messageLength = buffer.getInteger(at: buffer.readerIndex + 1, as: Int32.self),
+                messageLength >= 4
+            else {
+                throw DriverError("Invalid backend message header")
+            }
 
             let dataLength = Int(messageLength) - 4  // 4 bytes for the length itself
             guard buffer.readableBytes >= dataLength + 5 else {
@@ -147,10 +231,56 @@ final class ProtocolClient: @unchecked Sendable {
             }
 
             buffer.moveReaderIndex(forwardBy: 5)  // Move past the message type and length
-            var dataBuffer = buffer.readSlice(length: dataLength)!
+            guard var dataBuffer = buffer.readSlice(length: dataLength) else {
+                throw DriverError("Invalid backend message body")
+            }
             let message = try Self.decodeMessage(messageType, &dataBuffer)
             context.fireChannelRead(wrapInboundOut(message))
             return .continue
+        }
+
+        private static func readInteger<T: FixedWidthInteger>(
+            _ buffer: inout ByteBuffer, as type: T.Type, field: String
+        ) throws -> T {
+            guard let value = buffer.readInteger(as: type) else {
+                throw DriverError("Invalid backend message: missing \(field)")
+            }
+            return value
+        }
+
+        private static func readCount(_ buffer: inout ByteBuffer, field: String) throws -> Int {
+            let count = try readInteger(&buffer, as: Int16.self, field: field)
+            guard count >= 0 else {
+                throw DriverError("Invalid backend message: negative \(field)")
+            }
+            return Int(count)
+        }
+
+        private static func readNullTerminatedString(_ buffer: inout ByteBuffer, field: String)
+            throws -> String
+        {
+            guard let value = buffer.readNullTerminatedString() else {
+                throw DriverError("Invalid backend message: missing \(field)")
+            }
+            return value
+        }
+
+        private static func readString(_ buffer: inout ByteBuffer, length: Int, field: String)
+            throws -> String
+        {
+            guard let value = buffer.readString(length: length) else {
+                throw DriverError("Invalid backend message: missing \(field)")
+            }
+            return value
+        }
+
+        private static func readBytes(_ buffer: inout ByteBuffer, length: Int, field: String)
+            throws -> [UInt8]
+        {
+            guard let value = buffer.readBytes(length: length) else {
+                throw DriverError("Invalid backend message: missing \(field)")
+            }
+            return value
         }
 
         private static func decodeMessage(_ type: UInt8, _ buffer: inout ByteBuffer) throws
@@ -161,7 +291,8 @@ final class ProtocolClient: @unchecked Sendable {
 
             switch type {
             case 82:  // 'R'
-                let authMessageType = buffer.readInteger(as: Int32.self)!
+                let authMessageType = try readInteger(
+                    &buffer, as: Int32.self, field: "authentication message type")
                 switch authMessageType {
                 case 0:
                     message = .authenticationOk
@@ -170,7 +301,7 @@ final class ProtocolClient: @unchecked Sendable {
                 case 3:
                     message = .authenticationCleartextPassword
                 case 5:
-                    let salt = buffer.readBytes(length: 4)!
+                    let salt = try readBytes(&buffer, length: 4, field: "MD5 salt")
                     message = .authenticationMD5Password(salt)
                 case 7:
                     message = .authenticationGSS
@@ -180,64 +311,80 @@ final class ProtocolClient: @unchecked Sendable {
                     message = .authenticationSSPI
                 case 10:
                     message = .authenticationSasl(
-                        buffer.readNullTerminatedString()!.split(separator: ",").map { String($0) })
+                        try readNullTerminatedString(&buffer, field: "SASL mechanisms")
+                            .split(separator: ",").map { String($0) })
                 case 11:
                     message = .authenticationSaslContinue(
-                        buffer.readString(length: buffer.readableBytes)!)
+                        try readString(
+                            &buffer, length: buffer.readableBytes, field: "SASL challenge"))
                 case 12:
                     message = .authenticationSaslFinal(
-                        buffer.readString(length: buffer.readableBytes)!)
+                        try readString(
+                            &buffer, length: buffer.readableBytes, field: "SASL final message"))
                 default:
                     throw DriverError("Unknown authentication message type: \(authMessageType)")
                 }
             case 75:  // 'K'
-                let processID = buffer.readInteger(as: Int32.self)!
-                let secretKey = buffer.readInteger(as: Int32.self)!
+                let processID = try readInteger(&buffer, as: Int32.self, field: "process ID")
+                let secretKey = try readInteger(&buffer, as: Int32.self, field: "secret key")
                 message = .backendKeyData(processID, secretKey)
             case 50:  // '2'
                 message = .bindComplete
             case 51:  // '3'
                 message = .closeComplete
             case 67:  // 'C'
-                message = .commandComplete(buffer.readNullTerminatedString()!)
+                message = .commandComplete(
+                    try readNullTerminatedString(&buffer, field: "command tag"))
             case 100:  // 'd'
-                message = .copyData(buffer.readBytes(length: buffer.readableBytes)!)
+                message = .copyData(
+                    try readBytes(&buffer, length: buffer.readableBytes, field: "copy data"))
             case 99:  // 'c'
                 message = .copyDone
             case 71:  // 'G'
+                let format = try readInteger(&buffer, as: Int8.self, field: "copy-in format")
+                let columnCount = try readCount(&buffer, field: "copy-in column count")
                 message = .copyInResponse(
-                    buffer.readInteger(as: Int8.self)!,
-                    (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-                        buffer.readInteger(as: Int16.self)!
+                    format,
+                    try (0..<columnCount).map { _ in
+                        try readInteger(&buffer, as: Int16.self, field: "copy-in column format")
                     }
                 )
             case 72:  // 'H'
+                let format = try readInteger(&buffer, as: Int8.self, field: "copy-out format")
+                let columnCount = try readCount(&buffer, field: "copy-out column count")
                 message = .copyOutResponse(
-                    buffer.readInteger(as: Int8.self)!,
-                    (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-                        buffer.readInteger(as: Int16.self)!
+                    format,
+                    try (0..<columnCount).map { _ in
+                        try readInteger(&buffer, as: Int16.self, field: "copy-out column format")
                     }
                 )
             case 87:  // 'W'
+                let format = try readInteger(&buffer, as: Int8.self, field: "copy-both format")
+                let columnCount = try readCount(&buffer, field: "copy-both column count")
                 message = .copyBothResponse(
-                    buffer.readInteger(as: Int8.self)!,
-                    (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-                        buffer.readInteger(as: Int16.self)!
+                    format,
+                    try (0..<columnCount).map { _ in
+                        try readInteger(&buffer, as: Int16.self, field: "copy-both column format")
                     }
                 )
             case 68:  // 'D'
-                message = .dataRow(columns: buffer.readInteger(as: Int16.self)!, columnData: buffer)
+                message = .dataRow(
+                    columns: try readInteger(&buffer, as: Int16.self, field: "data row column count"),
+                    columnData: buffer)
             case 73:  // 'I'
                 message = .emptyQueryResponse
             case 69:  // 'E'
                 message = .errorResponse(decodeServerErrorNoticeMessage(buffer: &buffer))
             case 86:  // 'V'
-                message = .functionCallResponse(buffer.readBytes(length: buffer.readableBytes)!)
+                message = .functionCallResponse(
+                    try readBytes(
+                        &buffer, length: buffer.readableBytes, field: "function call response"))
             case 118:  // 'v'
+                let optionCount = try readCount(&buffer, field: "unrecognized option count")
                 message = .negotiateProtocolVersion(
-                    buffer.readInteger(as: Int32.self)!,
-                    (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-                        buffer.readNullTerminatedString()!
+                    try readInteger(&buffer, as: Int32.self, field: "newest protocol version"),
+                    try (0..<optionCount).map { _ in
+                        try readNullTerminatedString(&buffer, field: "unrecognized option")
                     }
                 )
             case 110:  // 'n'
@@ -245,37 +392,46 @@ final class ProtocolClient: @unchecked Sendable {
             case 78:  // 'N'
                 message = .noticeResponse(decodeServerErrorNoticeMessage(buffer: &buffer))
             case 65:  // 'A'
-                let processID = buffer.readInteger(as: Int32.self)!
-                let channel = buffer.readNullTerminatedString()!
-                let payload = buffer.readNullTerminatedString()!
+                let processID = try readInteger(&buffer, as: Int32.self, field: "process ID")
+                let channel = try readNullTerminatedString(&buffer, field: "notification channel")
+                let payload = try readNullTerminatedString(&buffer, field: "notification payload")
                 message = .notificationResponse(processID, channel, payload)
             case 116:  // 't'
+                let parameterCount = try readCount(&buffer, field: "parameter count")
                 message = .parameterDescription(
-                    (0..<buffer.readInteger(as: Int16.self)!).map { _ in
-                        buffer.readInteger(as: Int32.self)!
+                    try (0..<parameterCount).map { _ in
+                        try readInteger(&buffer, as: Int32.self, field: "parameter type OID")
                     }
                 )
             case 83:  // 'S'
-                let parameter = buffer.readNullTerminatedString()!
-                let value = buffer.readNullTerminatedString()!
+                let parameter = try readNullTerminatedString(&buffer, field: "parameter name")
+                let value = try readNullTerminatedString(&buffer, field: "parameter value")
                 message = .parameterStatus(parameter, value)
             case 49:  // '1'
                 message = .parseComplete
             case 115:  // 's'
                 message = .portalSuspended
             case 90:  // 'Z'
-                message = .readyForQuery(buffer.readInteger(as: UInt8.self)!)
+                message = .readyForQuery(
+                    try readInteger(&buffer, as: UInt8.self, field: "transaction status"))
             case 84:  // 'T'
+                let fieldCount = try readCount(&buffer, field: "row description field count")
                 message = .rowDescription(
-                    (0..<buffer.readInteger(as: Int16.self)!).map { _ in
+                    try (0..<fieldCount).map { _ in
                         .init(
-                            name: buffer.readNullTerminatedString()!,
-                            tableOID: buffer.readInteger(as: Int32.self)!,
-                            columnAttr: buffer.readInteger(as: Int16.self)!,
-                            dataTypeOID: buffer.readInteger(as: Int32.self)!,
-                            dataTypeSize: buffer.readInteger(as: Int16.self)!,
-                            typeModifier: buffer.readInteger(as: Int32.self)!,
-                            formatCode: buffer.readInteger(as: Int16.self)!
+                            name: try readNullTerminatedString(&buffer, field: "field name"),
+                            tableOID: try readInteger(
+                                &buffer, as: Int32.self, field: "table OID"),
+                            columnAttr: try readInteger(
+                                &buffer, as: Int16.self, field: "column attribute"),
+                            dataTypeOID: try readInteger(
+                                &buffer, as: Int32.self, field: "data type OID"),
+                            dataTypeSize: try readInteger(
+                                &buffer, as: Int16.self, field: "data type size"),
+                            typeModifier: try readInteger(
+                                &buffer, as: Int32.self, field: "type modifier"),
+                            formatCode: try readInteger(
+                                &buffer, as: Int16.self, field: "format code")
                         )
                     }
                 )
@@ -460,35 +616,276 @@ final class ProtocolClient: @unchecked Sendable {
         }
     }
 
-    private final class ReadyForStartupHandler: ChannelInboundHandler, Sendable {
-        typealias InboundIn = PostgreSQLBackendMessage
+    private final class SSLRequestHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
+        typealias InboundIn = ByteBuffer
+        typealias OutboundOut = ByteBuffer
 
         private let promise: EventLoopPromise<Void>
-        private let tls: Bool
-        init(promise: EventLoopPromise<Void>, tls: Bool) {
+        private var completed = false
+        private var inboundBuffer = ByteBuffer()
+
+        init(promise: EventLoopPromise<Void>) {
             self.promise = promise
-            self.tls = tls
         }
 
-        func channelActive(context: ChannelHandlerContext) {
-            context.fireChannelActive()
-            if !tls {
-                promise.succeed(())
+        func handlerAdded(context: ChannelHandlerContext) {
+            var buffer = context.channel.allocator.buffer(capacity: 8)
+            buffer.writeInteger(Int32(8))
+            buffer.writeInteger(Int32(80877103))
+            context.writeAndFlush(wrapOutboundOut(buffer), promise: nil)
+        }
+
+        func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+            var data = unwrapInboundIn(data)
+            inboundBuffer.writeBuffer(&data)
+            guard let response = inboundBuffer.readInteger(as: UInt8.self) else {
+                return
+            }
+
+            switch response {
+            case UInt8(ascii: "S"):
+                succeed()
+            case UInt8(ascii: "N"):
+                fail(ClientError.connectionError("Server does not support TLS"), context: context)
+            default:
+                fail(DriverError("Invalid SSL negotiation response: \(response)"), context: context)
             }
         }
 
-        func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
-            context.fireUserInboundEventTriggered(event)
-            if tls {
-                if case TLSUserEvent.handshakeCompleted = event {
-                    promise.succeed(())
-                }
-            }
+        func channelInactive(context: ChannelHandlerContext) {
+            fail(ClientError.connectionError("Connection closed during SSL negotiation"), context: context)
+            context.fireChannelInactive()
         }
 
         func errorCaught(context: ChannelHandlerContext, error: Error) {
+            fail(error, context: context)
             context.fireErrorCaught(error)
+        }
+
+        private func succeed() {
+            guard !completed else {
+                return
+            }
+            completed = true
+            promise.succeed(())
+        }
+
+        private func fail(_ error: Error, context: ChannelHandlerContext) {
+            guard !completed else {
+                return
+            }
+            completed = true
             promise.fail(error)
+            context.close(promise: nil)
+        }
+    }
+
+    private final class TLSHandshakeHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
+        typealias InboundIn = ByteBuffer
+
+        private let promise: EventLoopPromise<Void>
+        private var completed = false
+
+        init(promise: EventLoopPromise<Void>) {
+            self.promise = promise
+        }
+
+        func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+            if case TLSUserEvent.handshakeCompleted = event {
+                succeed()
+            }
+            context.fireUserInboundEventTriggered(event)
+        }
+
+        func channelInactive(context: ChannelHandlerContext) {
+            fail(ClientError.connectionError("Connection closed during TLS handshake"), context: context)
+            context.fireChannelInactive()
+        }
+
+        func errorCaught(context: ChannelHandlerContext, error: Error) {
+            fail(error, context: context)
+            context.fireErrorCaught(error)
+        }
+
+        private func succeed() {
+            guard !completed else {
+                return
+            }
+            completed = true
+            promise.succeed(())
+        }
+
+        private func fail(_ error: Error, context: ChannelHandlerContext) {
+            guard !completed else {
+                return
+            }
+            completed = true
+            promise.fail(error)
+            context.close(promise: nil)
+        }
+    }
+
+    private final class StartupHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
+        typealias InboundIn = PostgreSQLBackendMessage
+        typealias OutboundOut = PostgreSQLFrontendMessage
+
+        private let configs: ConnectionConfigs
+        private let promise: EventLoopPromise<Void>
+        private var completed = false
+        private var authenticated = false
+        private var receivedBackendKeyData = false
+        private var scramSha256Authenticator: ScramSha256Authenticator?
+        private var lastServerError: DatabaseError?
+
+        init(configs: ConnectionConfigs, promise: EventLoopPromise<Void>) {
+            self.configs = configs
+            self.promise = promise
+        }
+
+        func handlerAdded(context: ChannelHandlerContext) {
+            send(.startupMessage(configs.username, configs.database), context: context)
+        }
+
+        func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+            let message = unwrapInboundIn(data)
+            do {
+                try handle(message, context: context)
+            } catch {
+                fail(error, context: context)
+            }
+        }
+
+        func channelInactive(context: ChannelHandlerContext) {
+            if let lastServerError {
+                fail(lastServerError, context: context)
+            } else {
+                fail(ClientError.connectionError("Connection closed during startup"), context: context)
+            }
+            context.fireChannelInactive()
+        }
+
+        func errorCaught(context: ChannelHandlerContext, error: Error) {
+            if let lastServerError {
+                fail(lastServerError, context: context)
+            } else {
+                fail(error, context: context)
+            }
+            context.fireErrorCaught(error)
+        }
+
+        private func handle(_ message: PostgreSQLBackendMessage, context: ChannelHandlerContext)
+            throws
+        {
+            guard !completed else {
+                return
+            }
+
+            switch message {
+            case .authenticationOk:
+                authenticated = true
+
+            case .authenticationSasl(let mechanisms):
+                guard
+                    mechanisms.contains("SCRAM-SHA-256")
+                        || mechanisms.contains("SCRAM-SHA-256-PLUS")
+                else {
+                    throw DriverError("No supported SASL mechanism found. Supported: \(mechanisms)")
+                }
+
+                let authenticator = try ScramSha256Authenticator(
+                    username: configs.username,
+                    password: configs.password
+                )
+                scramSha256Authenticator = authenticator
+                send(
+                    .saslInitialResponse(
+                        mechanism: "SCRAM-SHA-256",
+                        initialResponse: authenticator.formatClientFirstMessage()
+                    ),
+                    context: context
+                )
+
+            case .authenticationSaslContinue(let challenge):
+                guard let scramSha256Authenticator else {
+                    throw DriverError("Received SASL challenge before SASL authentication started")
+                }
+                try scramSha256Authenticator.handleServerFirstMessage(challenge)
+                send(
+                    .saslResponse(try scramSha256Authenticator.formatClientFinalMessage()),
+                    context: context
+                )
+
+            case .authenticationSaslFinal(let finalMessage):
+                guard let scramSha256Authenticator else {
+                    throw DriverError("Received SASL final message before SASL authentication started")
+                }
+                try scramSha256Authenticator.handleServerFinalMessage(finalMessage)
+
+            case .authenticationCleartextPassword:
+                throw DriverError("Unsupported authentication method: cleartext password")
+
+            case .authenticationMD5Password:
+                throw DriverError("Unsupported authentication method: MD5 password")
+
+            case .authenticationKerberosV5:
+                throw DriverError("Unsupported authentication method: Kerberos V5")
+
+            case .authenticationGSS:
+                throw DriverError("Unsupported authentication method: GSS")
+
+            case .authenticationGSSContinue:
+                throw DriverError("Unsupported authentication method: GSS continuation")
+
+            case .authenticationSSPI:
+                throw DriverError("Unsupported authentication method: SSPI")
+
+            case .backendKeyData:
+                guard authenticated else {
+                    throw DriverError("Received backend key data before authentication completed")
+                }
+                receivedBackendKeyData = true
+
+            case .readyForQuery:
+                guard authenticated else {
+                    throw DriverError("Received ready for query before authentication completed")
+                }
+                guard receivedBackendKeyData else {
+                    throw DriverError("Received ready for query before backend key data")
+                }
+                succeed()
+
+            case .errorResponse(let errorMessage):
+                let error = DatabaseError.from(errorMessage: errorMessage)
+                lastServerError = error
+                fail(error, context: context)
+
+            case .noticeResponse, .notificationResponse, .parameterStatus:
+                break
+
+            default:
+                throw DriverError("Unexpected startup message: \(message)")
+            }
+        }
+
+        private func send(_ message: PostgreSQLFrontendMessage, context: ChannelHandlerContext) {
+            context.writeAndFlush(wrapOutboundOut(message), promise: nil)
+        }
+
+        private func succeed() {
+            guard !completed else {
+                return
+            }
+            completed = true
+            promise.succeed(())
+        }
+
+        private func fail(_ error: Error, context: ChannelHandlerContext) {
+            guard !completed else {
+                return
+            }
+            completed = true
+            promise.fail(error)
+            context.close(promise: nil)
         }
     }
 }
