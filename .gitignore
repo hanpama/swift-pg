@@ -2,3 +2,4 @@
 .swiftpm/
 .venv/
 /certs/
+.DS_Store
