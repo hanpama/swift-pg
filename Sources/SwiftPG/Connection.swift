@@ -126,6 +126,7 @@ public final class Connection: Sendable {
         } onCancel: {
             cancelCurrentTask()
         }
+        try await waitCurrentTask()
     }
 
     public func batchQuery(_ sql: String, _ batches: [[PostgreSQLEncodable]]) async throws -> PostgreSQLRows {
@@ -206,6 +207,7 @@ public final class Connection: Sendable {
         } onCancel: {
             cancelCurrentTask()
         }
+        try await waitCurrentTask()
     }
 
     private func receiveRow(stmt: PostgreSQLStatement, rowLimit: Int32) async throws -> PostgreSQLRow? {
